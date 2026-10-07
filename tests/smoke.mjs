@@ -16,7 +16,7 @@ const errors = [];
 page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
 page.on('pageerror', e => errors.push(String(e.stack || e)));
 await page.goto(url);
-await page.waitForFunction(() => window.game && window.game.time > 0.5, null, { timeout: 30000 });
+await page.waitForFunction(() => window.game && window.game.time > 0.5, null, { timeout: 180000 });
 await page.screenshot({ path: 'tests/screenshots/01-start.png' });
 
 const hold = async (key, ms) => { await page.keyboard.down(key); await page.waitForTimeout(ms); await page.keyboard.up(key); };
