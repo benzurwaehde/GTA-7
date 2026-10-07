@@ -4,6 +4,9 @@ import { mulberry32, GB, rgb, tint, smoothstep, lerp } from './util.js';
 import * as TX from './textures.js';
 import { makeSkyDome, skyColors } from './sky.js';
 import { treeGeo, palmGeo, lampPoleGeo, lampHeadGeo } from './props.js';
+import { Signals } from './signals.js';
+import { Shops } from './shops.js';
+import { buildFurniture } from './furniture.js';
 
 const H = CITY.half;
 const SW = CITY.sidewalk;
@@ -57,6 +60,7 @@ export class City {
     this._buildTerrainAndRoads();
     this._buildBlocks();
     this._buildProps();
+    this._buildDetails();
     this._buildBoundaries();
     this._buildSky();
     this._buildSea();
@@ -154,7 +158,7 @@ export class City {
     const facades = this._facadeGB = [new GB(), new GB(), new GB()];
     const roofGB = this._roofGB = new GB();
     const terrain = this._terrainGB, asph = this._asphGB, marks = this._marksGB;
-    this._parks = []; this._yardSpots = []; this._lotsForTrees = [];
+    this._parks = []; this._yardSpots = []; this._lotsForTrees = []; this._shopSpecs = [];
     const poiAt = new Map(POI_DEFS.map((p) => [p.i + ',' + p.j, p]));
     const pick = (arr) => arr[(rnd() * arr.length) | 0];
     const rr = (a, b) => a + rnd() * (b - a);
@@ -191,12 +195,12 @@ export class City {
       for (let a = 0; a < nx; a++) for (let c = 0; c < nz; c++) {
         const lx0 = ix0 + a * lw, lz0 = iz0 + c * ld, lx1 = lx0 + lw, lz1 = lz0 + ld;
         if (rnd() < 0.05 && tier > 1) { this._lotsForTrees.push([lx0, lz0, lx1, lz1, null]); continue; }
-        this._buildLot(lx0, lz0, lx1, lz1, tier, dk, pal, rnd);
+        this._buildLot(lx0, lz0, lx1, lz1, tier, dk, pal, rnd, { nx0: a === 0, nx1: a === nx - 1, nz0: c === 0, nz1: c === nz - 1 });
       }
     }
   }
 
-  _buildLot(lx0, lz0, lx1, lz1, tier, dk, pal, rnd) {
+  _buildLot(lx0, lz0, lx1, lz1, tier, dk, pal, rnd, edges) {
     const rr = (a, b) => a + rnd() * (b - a);
     const house = tier === 3 || (tier === 2 && rnd() < 0.35);
     let x0, z0, x1, z1, floors;
@@ -218,6 +222,7 @@ export class City {
     const F = this._facadeGB[style];
     F.box(x0, SLAB, z0, x1, SLAB + h, z1, wallCol, { mode: 'facade', uoff, top: false });
     this.colliders.push({ minX: x0, maxX: x1, minZ: z0, maxZ: z1, maxY: SLAB + h, type: 'building' });
+    if (!house && tier <= 1) this._shopSpecs.push({ x0, z0, x1, z1, floors, tier, edges, wallCol }); // shopfronts (see shops.js)
     const R = this._roofGB;
     const top = SLAB + h;
     if (house) {
@@ -405,7 +410,7 @@ export class City {
     const n = lamps.length;
     const poles = new THREE.InstancedMesh(lampPoleGeo(), this.mat.lamp, n);
     const heads = new THREE.InstancedMesh(lampHeadGeo(), this.mat.lampHead, n);
-    const glows = new THREE.InstancedMesh(new THREE.PlaneGeometry(22, 22).rotateX(-Math.PI / 2), this.mat.glow, n);
+    const glows = new THREE.InstancedMesh(new THREE.PlaneGeometry(30, 30).rotateX(-Math.PI / 2), this.mat.glow, n);
     const d = new THREE.Object3D();
     lamps.forEach(([x, z, dx, dz], k) => {
       d.position.set(x, SLAB, z); d.rotation.set(0, Math.atan2(-dz, dx), 0); d.scale.set(1, 1, 1); d.updateMatrix();
@@ -418,6 +423,16 @@ export class City {
     this.group.add(poles, heads, glows);
     this._glows = glows;
   }
+
+  // traffic signals, shopfronts + neon, street furniture (T3)
+  _buildDetails() {
+    this.signals = new Signals(this.game, this.group);
+    this.shops = new Shops(this.group, this._shopSpecs);
+    this._furnitureCount = buildFurniture(this.group);
+  }
+
+  // Traffic light contract: 'green' | 'yellow' | 'red' | null (no signal within 25 m). axis 'ns' = along Z, 'ew' = along X.
+  signalAt(x, z, axis) { return this.signals.signalAt(x, z, axis); }
 
   _buildBoundaries() {
     const e = H + 50, t = 30, big = e + t + 50;
@@ -449,6 +464,8 @@ export class City {
     this.group.add(this.hemi, this.sun, this.sun.target);
     this.game.scene.fog = new THREE.Fog(0xaad0f0, 140, 780);
     this._top = new THREE.Color(); this._hor = new THREE.Color();
+    this._moonDir = new THREE.Vector3();
+    this._c = { sunLo: new THREE.Color(0xff9a55), sunHi: new THREE.Color(0xfff1dc), white: new THREE.Color(0xffffff), nightSky: new THREE.Color(0x6a80c8), gDay: new THREE.Color(0x3a3a30), gNight: new THREE.Color(0x2a3044), lampOff: new THREE.Color(0x777066), lampOn: new THREE.Color(0xfff0c8), moon: new THREE.Color(0xa4bcff) };
     this._sunDir = new THREE.Vector3();
   }
 
@@ -492,7 +509,7 @@ export class City {
     fog.color.copy(this._hor).lerp(this._top, 0.12).multiplyScalar(0.92);
     // light source: sun by day, moon by night (swap happens while intensity ~0)
     const above = elev > 0;
-    const dir = above ? sd : sd.clone().negate();
+    const dir = above ? sd : this._moonDir.copy(sd).negate();
     const target = this.sun.target.position;
     const p = this.game.player?.position;
     const tx = p ? p.x : this._spawn?.x ?? 0, tz = p ? p.z : this._spawn?.z ?? 0;
@@ -501,21 +518,23 @@ export class City {
     this.sun.position.copy(target).addScaledVector(dir, 220);
     if (above) {
       this.sun.intensity = smoothstep(0, 0.22, elev) * 3.2;
-      this.sun.color.set(0xff9a55).lerp(new THREE.Color(0xfff1dc), smoothstep(0.05, 0.5, elev));
+      this.sun.color.copy(this._c.sunLo).lerp(this._c.sunHi, smoothstep(0.05, 0.5, elev));
     } else {
-      this.sun.intensity = smoothstep(0, 0.22, -elev) * 0.45;
-      this.sun.color.set(0x9ab4ff);
+      this.sun.intensity = smoothstep(0, 0.22, -elev) * 1.15; // moonlight
+      this.sun.color.copy(this._c.moon);
     }
-    this.hemi.intensity = lerp(1.1, 1.7, dayF);
-    this.hemi.color.copy(this._top).lerp(new THREE.Color(0xffffff), 0.45 * (1 - night)).lerp(new THREE.Color(0x4a5a9a), night * 0.6);
-    this.hemi.groundColor.set(0x3a3a30).lerp(new THREE.Color(0x14161c), night);
+    this.hemi.intensity = lerp(1.1, 1.7, dayF) + night * 1.2;
+    this.hemi.color.copy(this._top).lerp(this._c.white, 0.45 * (1 - night)).lerp(this._c.nightSky, night * 0.7);
+    this.hemi.groundColor.copy(this._c.gDay).lerp(this._c.gNight, night);
+    this.game.renderer.toneMappingExposure = 1.05 + night * 0.3;
     // night emissive
-    const e = night * 0.95 + (1 - dayF) * 0.1;
+    const e = night * 0.62 + (1 - dayF) * 0.08;
     for (const m of this.mat.facade) m.emissiveIntensity = e;
-    this.mat.lampHead.color.set(0x777066).lerp(new THREE.Color(0xfff0c8), night);
-    this.mat.glow.opacity = night * 0.85; this._glows.visible = night > 0.02;
+    this.mat.lampHead.color.copy(this._c.lampOff).lerp(this._c.lampOn, night);
+    this.mat.glow.opacity = night * 1.0; this._glows.visible = night > 0.02;
     for (const s of this._signs || []) s.material.emissiveIntensity = 0.35 + night * 0.9;
     for (const bm of this._beams || []) bm.material.opacity = 0.14 + night * 0.18;
+    this.shops?.update(night);
     this._sea.material.color.set(0x1d7fa6).multiplyScalar(0.25 + 0.75 * dayF);
     this._sea.material.specular.set(0xffffff).multiplyScalar(0.3 + 0.7 * (above ? 1 : 0.3));
     this._sea.material.emissive.set(0x0a2a3a).multiplyScalar(night * 0.4);
@@ -525,6 +544,7 @@ export class City {
     this.timeOfDay = (this.timeOfDay + dt / 60) % 24;
     this._waterNormal.offset.x += dt * 0.004; this._waterNormal.offset.y += dt * 0.0025;
     this._applyTime();
+    this.signals.update(dt, this.nightFactor);
   }
 
   // ---------------------------------------------------------------- queries

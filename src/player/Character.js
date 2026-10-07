@@ -94,7 +94,7 @@ export class Character {
   get punching() { return this.punchT < 1; }
 
   // speed: horizontal m/s, grounded: bool, aiming: 0..1 target, dying: 0..1 fall progress
-  update(dt, { speed = 0, grounded = true, aiming = false, dying = 0, vy = 0, sprint = false } = {}) {
+  update(dt, { speed = 0, grounded = true, aiming = false, dying = 0, vy = 0, sprint = false, reload = -1 } = {}) {
     this.t += dt;
     if (dying > 0) { this.updateDeath(dying); return; }
     this.body.rotation.set(0, 0, 0); this.body.position.set(0, 0, 0);
@@ -137,6 +137,13 @@ export class Character {
       rx = rx * (1 - a) + (-1.5) * a; rz = rz * (1 - a); re = re * (1 - a) - 0.05 * a;
       lx = lx * (1 - a) + (-1.25) * a; lz = lz * (1 - a) + 0.35 * a; le = le * (1 - a) - 0.7 * a;
       this.spine.rotation.y += 0.1 * a;
+    }
+    // reload: left hand comes over to the gun, gun drops towards the chest and back (reload = progress 0..1)
+    if (reload >= 0) {
+      const e = Math.sin(clamp01(reload) * Math.PI), q = clamp01(e * 2.5);
+      rx = rx * (1 - q) + (-0.75) * q; re = re * (1 - q) - 1.1 * q;
+      lx = lx * (1 - q) + (-1.0) * q; lz = lz * (1 - q) + 0.5 * q; le = le * (1 - q) - 1.2 * q;
+      this.spine.rotation.x += 0.12 * q;
     }
     // punch
     if (this.punchT < 1) {

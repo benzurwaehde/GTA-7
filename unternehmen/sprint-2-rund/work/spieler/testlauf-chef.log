@@ -1,0 +1,13 @@
+FAIL A1 player pressed against car but not inside (0.3 < gap < 1.5) gap=4.17
+PASS A4 pistol clip 12 / reserve 36 {"id":"pistol","name":"Pistol","ammo":36,"clip":12,"clipSize":12,"reloading":false}
+PASS A2 aim mode: fov < 55, aiming true {"info":{"aiming":true,"weaponId":"pistol","spread":0.0054},"fov":46.043066379888046,"dist":2.200000734165569}
+PASS A3 steep ray hits ped at y~1; shallow ray flies over (not ped) {"steep":{"kind":"ped","y":1.208333333333334},"shallow":"ground","flat":"ped"}
+PASS A5 SMG shots consume clip, spread blooms clip 30->24 spread 0.013->0.033 trauma 0.00
+PASS A4 R starts reload {"id":"smg","name":"SMG","ammo":120,"clip":3,"clipSize":30,"reloading":true,"prog":0.1842105263157896}
+PASS A4 reload finishes (clip 30, reserve reduced by 27) {"id":"smg","name":"SMG","ammo":93,"clip":30,"clipSize":30,"reloading":false}
+PASS A4 auto reload on last round {"id":"smg","name":"SMG","ammo":93,"clip":0,"clipSize":30,"reloading":true}
+PASS A7 mouse wheel changes weapon 2->0
+FAIL A6 footsteps while walking (3 s) steps=undefined
+errors: none
+SPIELER FAIL
+exit 1

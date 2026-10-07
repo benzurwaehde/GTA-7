@@ -10,3 +10,13 @@ Six Sonnet teams built in parallel against `ARCHITECTURE.md`; CEO integrated.
 - Audio: synthesized SFX, engine, sirens, 3 radio stations.
 - Integration fixes: unified steering sign (+1 = right), smoke-test startup timeout.
 - QA: build ✅, smoke ✅ (player walks, enters car, drives; 47 vehicles, 40 peds, no console errors).
+
+## Sprint 2 — "Runder machen" ✅ (2026-10-07)
+Fünf Sonnet-Teams, organisiert nach dem Unternehmens-Ablauf: Agent baut, Mitarbeiter prüft, Chef nimmt ab. Details stehen in `unternehmen/sprint-2-rund/`.
+- Fahrzeuge: Die fünf Autos sind in Blender per Skript modelliert (`tools/blender/`, GLB), nachts gibt es Licht (SpotLight beim Spieler), weiche Explosionen, Reifenspuren, Halt an Ampeln, Fluchtreaktion.
+- Spieler: Kollision mit Autos, Zielmodus mit rechter Maustaste, vertikales Zielen, Magazine und Nachladen, Rückstoß und Kamerawackeln, Schritte, Mausrad.
+- Welt: Ampeln an 81 Kreuzungen (`signalAt`), Läden im Erdgeschoss, Neon, Straßenmöbel, lesbarer Nacht-Look.
+- Erlebnis: Fadenkreuz und Treffermarker, Magazinanzeige, Missionsziel nur im Titelbalken, 15 Pickups, Speichern und Laden, Lautstärkeregler, Missionen `chase` und `delivery`.
+- Straße: vielfältige Passanten mit Armen, Ampelquerung, Zurückschlagen, Polizei auf der Spur mit Ausweichen, Straßensperren ab 4★, neue Sounds.
+- Kern (Chef): rechte Maustaste und Mausrad, GLB-Preloader, QA-Tour, `tools/heavy.sh`. Integrationsfix: `owned` gilt auch für NPC-Autos.
+- QA: Build ✅, Smoke ✅ (190 Draw Calls), QA-Tour ✅ (159 Draw Calls).

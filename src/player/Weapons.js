@@ -3,17 +3,24 @@ import { rayBox } from '../core/physics.js';
 
 export const WEAPON_DEFS = [
   { id: 'fists', name: 'Fists', melee: true, damage: 18, rate: 0.42, range: 1.9, ammo: Infinity, auto: false },
-  { id: 'pistol', name: 'Pistol', damage: 26, rate: 0.28, range: 90, ammo: 48, auto: false, spread: 0.012, sound: 'gunshot', vehDmg: 10 },
-  { id: 'smg', name: 'SMG', damage: 11, rate: 0.085, range: 80, ammo: 150, auto: true, spread: 0.04, sound: 'smg', vehDmg: 4 },
+  { id: 'pistol', name: 'Pistol', damage: 26, rate: 0.28, range: 90, ammo: 48, clipSize: 12, reload: 1.3, auto: false, spread: 0.012, sound: 'gunshot', vehDmg: 10, kick: 0.016, shake: 0.12 },
+  { id: 'smg', name: 'SMG', damage: 11, rate: 0.085, range: 80, ammo: 150, clipSize: 30, reload: 1.9, auto: true, spread: 0.03, sound: 'smg', vehDmg: 4, kick: 0.009, shake: 0.08 },
 ];
 
 const _v = new THREE.Vector3();
+const _o = new THREE.Vector3(), _d = new THREE.Vector3(), _p = new THREE.Vector3(), _o2 = new THREE.Vector3(), _d2 = new THREE.Vector3();
+// reusable result of castRay (no per-shot allocations)
+const HIT = { dist: 0, kind: null, target: null, point: new THREE.Vector3() };
 
 // Weapon inventory + hitscan + visual effects (muzzle flash, tracers, sparks).
 export class Weapons {
   constructor(game, player) {
     this.game = game; this.player = player;
-    this.states = WEAPON_DEFS.map(d => ({ id: d.id, name: d.name, ammo: d.ammo }));
+    // ammo = reserve; clip = rounds in the magazine
+    this.states = WEAPON_DEFS.map(d => d.melee
+      ? { id: d.id, name: d.name, ammo: d.ammo, clip: Infinity, clipSize: Infinity, reloading: false }
+      : { id: d.id, name: d.name, ammo: d.ammo - d.clipSize, clip: d.clipSize, clipSize: d.clipSize, reloading: false });
+    this.reloadT = 0; this.bloom = 0;
     this.index = 1;
     this.cooldown = 0;
     this.noAmmoMsg = 0;
@@ -48,12 +55,60 @@ export class Weapons {
     const n = this.states.length;
     this.index = ((i % n) + n) % n;
     this.cooldown = Math.max(this.cooldown, 0.15);
+    for (const st of this.states) { st.reloading = false; }
+    this.reloadT = 0;
     this.player.character.setWeapon(this.def.melee ? null : this.def.id);
     this.player.weapon = this.current;
     this.game.events.emit('weapon:changed', { weapon: this.current });
   }
   cycle(dir) { this.select(this.index + dir); }
   addAmmo(id, n) { const s = this.states.find(s => s.id === id); if (s && Number.isFinite(s.ammo)) s.ammo += n; }
+
+  // Start reloading the current weapon (manual R or automatic on empty clip).
+  startReload() {
+    const st = this.current, d = this.def;
+    if (d.melee || st.reloading || st.clip >= st.clipSize || st.ammo <= 0) return false;
+    st.reloading = true; this.reloadT = d.reload;
+    this.game.audio?.play?.('reload', { x: this.player.position.x, z: this.player.position.z });
+    return true;
+  }
+  // 0..1 progress of the running reload, or -1
+  get reloadProgress() { return this.current.reloading ? 1 - this.reloadT / this.def.reload : -1; }
+
+  // Nearest hit along a 3D ray (unit dir): walls (height-aware), peds, vehicles, ground. Fills and returns HIT.
+  castRay(o, d, maxDist) {
+    const g = this.game, p = this.player;
+    let dist = maxDist, kind = null, target = null;
+    const hl = Math.hypot(d.x, d.z);
+    const colliders = g.world?.colliders;
+    if (colliders && hl > 1e-6) for (let i = 0; i < colliders.length; i++) {
+      const b = colliders[i];
+      const t2 = rayBox(o.x, o.z, d.x / hl, d.z / hl, b);
+      if (t2 === Infinity) continue;
+      const t = t2 / hl;
+      if (t >= dist) continue;
+      const y = o.y + d.y * t;
+      if (y > (b.maxY ?? Infinity) || y < (b.minY ?? -1)) continue;
+      dist = t; kind = 'wall';
+    }
+    const ph = g.peds?.hitTest?.(o, d, dist);
+    if (ph && ph.ped && ph.dist <= dist) { dist = ph.dist; kind = 'ped'; target = ph.ped; }
+    const list = g.vehicles?.list;
+    if (list && hl > 1e-6) for (let i = 0; i < list.length; i++) {
+      const v = list[i];
+      if (!v || v.destroyed || v === p.vehicle || !v.position) continue;
+      const t2 = rayCircle(o.x, o.z, d.x / hl, d.z / hl, v.position.x, v.position.z, v.radius || 2);
+      const t = t2 / hl;
+      if (t >= dist) continue;
+      const y = o.y + d.y * t;
+      if (y < 0 || y > 1.8) continue;
+      dist = t; kind = 'vehicle'; target = v;
+    }
+    if (d.y < -1e-4) { const tg = -o.y / d.y; if (tg > 0 && tg < dist) { dist = tg; kind = 'ground'; target = null; } }
+    HIT.dist = dist; HIT.kind = kind; HIT.target = target;
+    HIT.point.copy(o).addScaledVector(d, dist);
+    return HIT;
+  }
 
   update(dt, wantFire, firePressed, aimYaw) {
     this.cooldown -= dt;
@@ -66,15 +121,29 @@ export class Weapons {
     }
     if (this.flash.visible) this.player.character.muzzleObject.getWorldPosition(this.flash.position);
 
-    const d = this.def;
+    this.bloom = Math.max(0, this.bloom - dt * 0.05);
+    const d = this.def, st = this.current;
+    if (st.reloading) {
+      this.reloadT -= dt;
+      if (this.reloadT <= 0) {
+        const n = Math.min(st.clipSize - st.clip, st.ammo);
+        st.clip += n; st.ammo -= n; st.reloading = false;
+      }
+      return false;
+    }
     const trigger = d.auto ? wantFire : firePressed;
     if (!trigger || this.cooldown > 0) return false;
-    if (this.current.ammo <= 0) {
-      if (firePressed && this.game.time - this.noAmmoMsg > 1) { this.noAmmoMsg = this.game.time; this.game.events.emit('hud:message', { text: `${d.name}: out of ammo`, duration: 1.5 }); }
+    if (!d.melee && st.clip <= 0) {
+      if (st.ammo > 0) this.startReload();
+      else if (firePressed) {
+        this.cooldown = 0.25;
+        this.game.audio?.play?.('empty', { x: this.player.position.x, z: this.player.position.z });
+        if (this.game.time - this.noAmmoMsg > 1) { this.noAmmoMsg = this.game.time; this.game.events.emit('hud:message', { text: `${d.name}: out of ammo`, duration: 1.5 }); }
+      }
       return false;
     }
     this.cooldown = d.rate;
-    if (d.melee) this.punch(d, aimYaw); else this.shoot(d, aimYaw);
+    if (d.melee) this.punch(d, aimYaw); else this.shoot(d);
     return true;
   }
 
@@ -92,43 +161,53 @@ export class Weapons {
     }
   }
 
-  shoot(d, yaw) {
-    const p = this.player, g = this.game;
-    this.current.ammo--;
-    const origin = new THREE.Vector3(p.position.x, p.position.y + 1.35, p.position.z);
-    const a = yaw + (Math.random() - 0.5) * 2 * (d.spread || 0);
-    const dir = new THREE.Vector3(Math.sin(a), 0, Math.cos(a));
-    // nearest of: wall, ped, vehicle
-    let dist = d.range, kind = null, target = null, point = null;
-    const colliders = g.world?.colliders;
-    if (colliders) for (const b of colliders) {
-      if (b.maxY !== undefined && b.maxY < 1.3) continue;
-      const t = rayBox(origin.x, origin.z, dir.x, dir.z, b);
-      if (t < dist) { dist = t; kind = 'wall'; }
-    }
-    const ph = g.peds?.hitTest?.(origin, dir, dist);
-    if (ph && ph.ped && ph.dist <= dist) { dist = ph.dist; kind = 'ped'; target = ph.ped; point = ph.point; }
-    const list = g.vehicles?.list;
-    if (list) for (const v of list) {
-      if (!v || v.destroyed || v === p.vehicle || !v.position) continue;
-      const t = rayCircle(origin.x, origin.z, dir.x, dir.z, v.position.x, v.position.z, v.radius || 2);
-      if (t < dist) { dist = t; kind = 'vehicle'; target = v; point = null; }
-    }
-    const end = point ? point.clone() : origin.clone().addScaledVector(dir, dist);
+  // Current spread (radians) for the crosshair: base + recent-fire bloom, tighter when aiming.
+  spread(aiming) {
+    const d = this.def;
+    return (d.spread || 0) * (aiming ? 0.45 : 1) + this.bloom;
+  }
+
+  shoot(d) {
+    const p = this.player, g = this.game, cam = p.cam;
+    this.current.clip--;
+    const sp = this.spread(p.aimK > 0.5);
+    // 1) camera ray through the screen centre (+ spread) finds the aim point under the crosshair
+    _d.copy(cam.aimDir);
+    _d.x += (Math.random() - 0.5) * 2 * sp; _d.y += (Math.random() - 0.5) * 2 * sp; _d.z += (Math.random() - 0.5) * 2 * sp;
+    _d.normalize();
+    const skip = cam.curDist || 0; // ignore everything between camera and player
+    _o.copy(cam.aimOrigin).addScaledVector(_d, skip);
+    this.castRay(_o, _d, d.range);
+    _p.copy(HIT.point);
+    // 2) bullet ray from the chest to that point (walls between player and target still block)
+    const origin = _o2.set(p.position.x, p.position.y + 1.35, p.position.z);
+    _d2.copy(_p).sub(origin);
+    const len = _d2.length();
+    if (len < 0.5) _d2.copy(_d); else _d2.multiplyScalar(1 / len);
+    this.castRay(origin, _d2, d.range);
+    const kind = HIT.kind, target = HIT.target, dist = HIT.dist;
+    const end = HIT.point.clone();
     if (kind === 'ped') g.peds.damage?.(target, d.damage, 'player');
     else if (kind === 'vehicle') g.vehicles.damage?.(target, d.vehDmg ?? d.damage * 0.4);
-    if (kind) this.spark(end, kind === 'ped' ? 7 : 10, kind === 'ped' ? 0xff4a3a : 0xffc860);
+    if (kind) this.spark(end, kind === 'ped' ? 7 : kind === 'ground' ? 4 : 10, kind === 'ped' ? 0xff4a3a : 0xffc860);
+    void dist;
 
     // visuals
     const muzzle = new THREE.Vector3();
     p.character.root.updateMatrixWorld(true);
     p.character.muzzleObject.getWorldPosition(muzzle);
     this.flash.visible = true; this.flashT = 0.05; this.flash.position.copy(muzzle);
-    this.flash.lookAt(muzzle.x + dir.x, muzzle.y, muzzle.z + dir.z);
+    this.flash.lookAt(muzzle.x + _d2.x, muzzle.y + _d2.y, muzzle.z + _d2.z);
     this.flash.rotation.z = Math.random() * 6;
-    this.tracer(muzzle, end.y === origin.y ? end.setY(muzzle.y) : end);
+    this.tracer(muzzle, end);
     g.audio?.play?.(d.sound, { x: p.position.x, z: p.position.z });
     g.events.emit('weapon:fired', { position: origin.clone(), weapon: d.id });
+
+    // recoil + camera shake, bloom grows with sustained fire
+    cam.kick(d.kick * (p.aimK > 0.5 ? 0.7 : 1));
+    cam.shake(d.shake);
+    this.bloom = Math.min(0.05, this.bloom + (d.spread || 0) * 0.25);
+    if (this.current.clip <= 0 && this.current.ammo > 0) this.startReload();
   }
 
   tracer(a, b) {

@@ -91,7 +91,7 @@ export class Missions {
     st.enter?.(m);
     if (this.active !== m) return;
     this.objective = this.computeMarker(m);
-    this.say(m.objectiveText, 4);
+    // the objective itself is shown in the top bar only (no duplicate toast)
   }
 
   computeMarker(m) {
@@ -99,7 +99,9 @@ export class Missions {
     return st?.marker?.(m) || null;
   }
 
-  finish() { this.active = null; this.objective = null; this.cooldown = 8; this.objMarker.visible = false; this.nextMarker.visible = false; }
+  finish() {
+    const m = this.active; try { m?.def.stages[m.stage]?.leave?.(m); } catch (e) { console.warn('[missions] leave failed', e); }
+    this.active = null; this.objective = null; this.cooldown = 8; this.objMarker.visible = false; this.nextMarker.visible = false; }
 
   fail(reason) {
     const m = this.active; if (!m) return;

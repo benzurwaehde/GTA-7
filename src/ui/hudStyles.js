@@ -24,6 +24,7 @@ export const HUD_CSS = `
 @keyframes vbStar { 0%{color:#ff2d55; text-shadow:0 0 12px #ff2d55} 100%{color:#2d6bff; text-shadow:0 0 12px #2d6bff} }
 .vb-weapon { margin-top:4px; padding:4px 12px 4px 16px; background:linear-gradient(90deg, rgba(11,6,24,0), rgba(11,6,24,.72) 30%); border-right:3px solid var(--vb-pink); font-size:20px; letter-spacing:.1em; font-style:italic; }
 .vb-weapon i { color:var(--vb-cyan); font-style:normal; margin-left:10px; }
+.vb-weapon i.rl { color:var(--vb-gold); font-style:italic; animation:vbBlink .35s infinite alternate; }
 
 /* minimap + bars */
 .vb-mapwrap { position:absolute; left:22px; bottom:22px; width:210px; }
@@ -70,6 +71,24 @@ export const HUD_CSS = `
 .vb-big.show { animation:vbBig var(--dur,3s) ease-out forwards; }
 @keyframes vbBig { 0%{opacity:0; transform:scale(2.2)} 8%{opacity:1; transform:scale(1)} 85%{opacity:1; transform:scale(1.04)} 100%{opacity:0; transform:scale(1.1)} }
 
+/* crosshair + hit marker */
+.vb-cross { position:absolute; left:50%; top:50%; width:0; height:0; opacity:0; transition:opacity .15s; --gap:8px; pointer-events:none; }
+.vb-cross.on { opacity:.9; }
+.vb-cross i { position:absolute; background:#fff; box-shadow:0 0 0 1px rgba(0,0,0,.65); transition:transform .12s, background .12s; }
+.vb-cross .u, .vb-cross .d { width:2px; height:9px; left:-1px; }
+.vb-cross .l, .vb-cross .r { height:2px; width:9px; top:-1px; }
+.vb-cross .u { top:calc(-9px - var(--gap)); } .vb-cross .d { top:var(--gap); }
+.vb-cross .l { left:calc(-9px - var(--gap)); } .vb-cross .r { left:var(--gap); }
+.vb-cross b { position:absolute; left:-1.5px; top:-1.5px; width:3px; height:3px; border-radius:50%; background:#fff; box-shadow:0 0 0 1px rgba(0,0,0,.65); }
+.vb-cross.aim i, .vb-cross.aim b { background:var(--vb-cyan); }
+.vb-hitmark { position:absolute; left:50%; top:50%; width:0; height:0; opacity:0; pointer-events:none; }
+.vb-hitmark i { position:absolute; left:-9px; top:-1.5px; width:18px; height:3px; background:#fff; box-shadow:0 0 0 1px rgba(0,0,0,.7); }
+.vb-hitmark i:first-child { transform:rotate(45deg); } .vb-hitmark i:last-child { transform:rotate(-45deg); }
+.vb-hitmark.kill i { background:#ff3355; }
+.vb-hitmark.show { animation:vbHit .22s ease-out; }
+.vb-hitmark.kill.show { animation-duration:.38s; }
+@keyframes vbHit { 0%{opacity:1; transform:scale(1.5)} 100%{opacity:0; transform:scale(.9)} }
+
 /* title screen */
 .vb-title { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; background:radial-gradient(ellipse at 50% 40%, rgba(255,45,149,.28), rgba(11,6,24,.82) 70%), linear-gradient(180deg, rgba(25,227,255,.12), rgba(11,6,24,.65)); transition:opacity .6s; z-index:5; }
 .vb-title.gone { opacity:0; }
@@ -84,9 +103,14 @@ export const HUD_CSS = `
 /* pause menu */
 .vb-pause { position:absolute; inset:0; display:none; align-items:center; justify-content:center; flex-direction:column; background:rgba(11,6,24,.72); backdrop-filter:blur(4px); z-index:6; }
 .vb-pause.on { display:flex; }
-.vb-pause h3 { margin:0 0 18px; font-weight:normal; font-size:76px; font-style:italic; letter-spacing:.2em; color:var(--vb-pink); text-shadow:0 0 24px rgba(255,45,149,.7), 0 4px 0 #000; }
+.vb-pause h3 { margin:0 0 12px; font-weight:normal; font-size:76px; font-style:italic; letter-spacing:.2em; color:var(--vb-pink); text-shadow:0 0 24px rgba(255,45,149,.7), 0 4px 0 #000; }
 .vb-btn { display:block; width:340px; margin:6px 0; padding:11px 0; text-align:center; font-family:var(--vb-font); font-size:26px; letter-spacing:.2em; font-style:italic; text-transform:uppercase; color:#fff; background:rgba(255,255,255,.06); border:2px solid rgba(255,255,255,.55); transform:skewX(-14deg); cursor:pointer; transition:background .12s, border-color .12s, color .12s; }
 .vb-btn:hover { background:var(--vb-pink); border-color:var(--vb-pink); }
-.vb-pause .vb-keys { background:rgba(11,6,24,.8); padding:16px 26px; border:2px solid var(--vb-cyan); margin-top:14px; display:none; }
+.vb-btn.armed { background:#ff3355; border-color:#ff3355; }
+.vb-vols { margin:8px 0 6px; width:340px; }
+.vb-vol { display:flex; align-items:center; gap:14px; margin:4px 0; font-size:20px; letter-spacing:.18em; font-style:italic; }
+.vb-vol span { width:90px; }
+.vb-vol input { flex:1; accent-color:var(--vb-pink); cursor:pointer; }
+.vb-pause .vb-keys { background:rgba(11,6,24,.8); padding:16px 26px; border:2px solid var(--vb-cyan); position:absolute; right:40px; top:50%; transform:translateY(-50%); display:none; }
 .vb-pause .vb-keys.on { display:grid; }
 `;

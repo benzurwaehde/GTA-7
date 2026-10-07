@@ -3,6 +3,7 @@ import { Radio, STATIONS } from './radio.js';
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const MAX_VOICES = 24;
+const HUM_VOICES = 4, HUM_RANGE = 45;
 
 export class AudioSystem {
   constructor(game) {
@@ -14,6 +15,8 @@ export class AudioSystem {
     this.voices = 0;
     this.radio = null;
     this.engine = null; this.screech = null; this.siren = null; this.amb = null;
+    this.horn = null; this.hornManual = false;
+    this.hum = null; this._humNear = new Array(HUM_VOICES).fill(null); this._humD = new Array(HUM_VOICES).fill(0);
     this._lastHeading = 0; this._lastVeh = null; this._slip = 0;
     this._gesture = () => this.unlock();
     try {
@@ -101,6 +104,7 @@ export class AudioSystem {
     try {
       if (!this.ready || this.ctx.state !== 'running') return;
       const fn = SFX[name];
+      if (name === 'horn' && this._playerHorn(opts)) return;
       if (!fn || this.voices >= MAX_VOICES) return;
       const sp = this._spatial(opts.x, opts.z);
       if (!sp) return;
@@ -114,10 +118,100 @@ export class AudioSystem {
       }
       node.connect(this.sfxBus);
       this.voices++;
-      const life = { wasted: 3.6, explosion: 2.2, mission: 1.4 }[name] || 1;
+      const life = { wasted: 3.6, explosion: 2.2, mission: 1.4, footstep: 0.2, empty: 0.15, reload: 1 }[name] || 1;
       setTimeout(() => { this.voices--; try { node.disconnect(); out.disconnect(); } catch (e) {} }, life * 1000 + 200);
       fn(ctx, out, this.noise, ctx.currentTime + 0.005, vol);
     } catch (e) { /* audio is best-effort */ }
+  }
+
+  // ---------- sustained horn ----------
+  // The player calls play('horn') while H is held; that turns into a continuous horn that lasts until H is released.
+  _playerHorn(opts) {
+    const pv = this.game.player?.vehicle, p = pv?.position;
+    if (!pv || !p || opts.x === undefined) return false;
+    if (Math.hypot(opts.x - p.x, opts.z - p.z) > 3) return false;
+    if (this.game.input?.isDown?.('KeyH')) { this._hornBegin(); return true; }
+    return false;   // a tap that already ended: normal one-shot
+  }
+  // External API: sustained horn until hornStop() (the player's H key is handled internally).
+  hornStart() { this.hornManual = true; this._hornBegin(); }
+  _hornBegin() {
+    if (!this.ready || this.horn) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const gain = ctx.createGain(), lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 1400;
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.linearRampToValueAtTime(0.26, t + 0.02);
+    lp.connect(gain); gain.connect(this.sfxBus);
+    const oscs = [392, 494].map(f => {
+      const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f;
+      o.connect(lp); o.start(t); return o;
+    });
+    this.horn = { gain, lp, oscs };
+  }
+  hornStop() {
+    this.hornManual = false;
+    const h = this.horn;
+    if (!h) return;
+    this.horn = null;
+    try {
+      const t = this.ctx.currentTime;
+      h.gain.gain.cancelScheduledValues(t);
+      h.gain.gain.setTargetAtTime(0, t, 0.03);
+      setTimeout(() => { try { for (const o of h.oscs) o.stop(); h.gain.disconnect(); } catch (e) {} }, 250);
+    } catch (e) {}
+  }
+  _updateHorn() {
+    const veh = this.game.player?.vehicle;
+    const held = !!veh && !veh.destroyed && !!this.game.input?.isDown?.('KeyH');
+    if (held || this.hornManual) this._hornBegin(); else if (this.horn) this.hornStop();
+  }
+
+  // ---------- quiet engine hum of nearby traffic (pooled, max HUM_VOICES) ----------
+  _updateHum() {
+    const ctx = this.ctx, t = ctx.currentTime;
+    if (!this.hum) {
+      this.hum = [];
+      for (let i = 0; i < HUM_VOICES; i++) {
+        const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = 60;
+        const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 260; lp.Q.value = 1.2;
+        const g = ctx.createGain(); g.gain.value = 0;
+        o.connect(lp); lp.connect(g);
+        let node = g;
+        if (ctx.createStereoPanner) { const pn = ctx.createStereoPanner(); g.connect(pn); node = pn; this.hum.push({ o, lp, g, pn }); }
+        else this.hum.push({ o, lp, g, pn: null });
+        node.connect(this.sfxBus);
+        o.start();
+      }
+    }
+    const near = this._humNear, nd = this._humD, pl = this.game.player, pp = pl?.position;
+    near.fill(null);
+    const list = this.game.vehicles?.list;
+    if (list && pp) {
+      for (let i = 0; i < list.length; i++) {
+        const v = list[i];
+        if (!v.driver || v.destroyed || v === pl.vehicle || !v.position || Math.abs(v.speed) < 0.5) continue;
+        const d = Math.hypot(v.position.x - pp.x, v.position.z - pp.z);
+        if (d > HUM_RANGE) continue;
+        // insertion into the nearest-N slots
+        let k = HUM_VOICES - 1;
+        if (near[k] && nd[k] <= d) continue;
+        while (k > 0 && (!near[k - 1] || nd[k - 1] > d)) { near[k] = near[k - 1]; nd[k] = nd[k - 1]; k--; }
+        near[k] = v; nd[k] = d;
+      }
+    }
+    const m = this.game.camera?.matrixWorld?.elements, inCar = pl?.vehicle ? 0.6 : 1;
+    for (let i = 0; i < HUM_VOICES; i++) {
+      const v = near[i], h = this.hum[i];
+      if (!v) { h.g.gain.setTargetAtTime(0, t, 0.15); continue; }
+      const d = nd[i], sp = Math.abs(v.speed);
+      const vol = 0.045 * inCar * Math.pow(1 - d / HUM_RANGE, 1.6) * (0.5 + Math.min(1, sp / 20) * 0.5);
+      h.g.gain.setTargetAtTime(vol, t, 0.15);
+      const f = (v.type === 'truck' ? 38 : v.type === 'sports' ? 60 : 48) + sp * 2.6;
+      h.o.frequency.setTargetAtTime(f, t, 0.2);
+      h.lp.frequency.setTargetAtTime(180 + sp * 9, t, 0.2);
+      if (h.pn && m && d > 1) h.pn.pan.setTargetAtTime(clamp(((v.position.x - pp.x) * m[0] + (v.position.z - pp.z) * m[2]) / d * 0.8, -1, 1), t, 0.1);
+    }
   }
 
   _bindEvents() {
@@ -300,6 +394,8 @@ export class AudioSystem {
       if (veh && !veh.destroyed) this._updateEngine(dt, veh); else if (this.engine) this._stopEngine();
       this._updateScreech(dt, veh);
       this._updateSiren(dt);
+      this._updateHorn();
+      this._updateHum();
       this._updateRadio(veh);
     } catch (e) { /* never break the frame loop */ }
   }

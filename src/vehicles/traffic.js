@@ -147,9 +147,27 @@ export function driveNPC(v, dt, game, list, playerPos) {
 
   // target speed
   let target = s.top * s.cruise * ai.factor;
+  if (ai.fleeT > 0) { ai.fleeT -= dt; target *= 1.75; }
+  if (ai.hitHonkCd > 0) ai.hitHonkCd -= dt;
   if (slow) target = Math.min(target, 7);
   if (Math.abs(err) > 0.6) target = Math.min(target, 6);
   if (Math.abs(err) > 1.4) target = Math.min(target, 3.5);
+
+  // traffic light: stop at the stop line on red/yellow; cars already past the line keep going.
+  // game.world.signalAt may be missing (then old behaviour), and fleeing cars ignore lights.
+  if (!(ai.fleeT > 0) && toNext < 70 && game.world?.signalAt) {
+    const ix = ai.axis === 0 ? ROAD_LINES[ai.ri] : ROAD_LINES[ai.next], iz = ai.axis === 0 ? ROAD_LINES[ai.next] : ROAD_LINES[ai.ri];
+    const sig = game.world.signalAt(ix, iz, ai.axis === 0 ? 'ns' : 'ew');
+    if (sig === 'red' || sig === 'yellow') {
+      const stopD = toNext - CITY.roadWidth / 2 - 1.2 - s.L / 2;      // distance from our nose to the stop line
+      const brakeD = v.speed * v.speed / (2 * 5.5);
+      if (stopD > -0.8 && !(sig === 'yellow' && stopD < brakeD)) {    // yellow: only stop if we still can
+        const stop = Math.max(0, stopD - 0.3);
+        target = Math.min(target, Math.sqrt(2 * 3.2 * stop) + (stop < 0.6 ? 0 : 0.3));
+        if (stopD < 2.5) target = Math.min(target, 0);
+      }
+    }
+  }
 
   // intersection occupied by crossing traffic -> wait before the box
   if (toNext > 4 && toNext < 15) {

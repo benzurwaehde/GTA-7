@@ -164,8 +164,10 @@ export class Vehicle {
     m.chassis.rotation.z = this.roll + (this.destroyed ? 0.12 : 0);
     m.chassis.rotation.x = this.pitch;
     if (!this.destroyed) {
-      const tail = this.braking ? MATS.tailOn : MATS.tailOff;
+      const lit = this.driver !== null;
+      const tail = !lit ? MATS.tailIdle : this.braking ? MATS.tailOn : MATS.tailOff, head = lit ? MATS.head : MATS.headIdle;
       if (m.tail.material !== tail) m.tail.material = tail;
+      if (m.head.material !== head) m.head.material = head;
       if (m.red) {
         const ph = this.sirenOn ? ((time * 7) | 0) % 2 : -1;
         m.red.material = ph === 0 ? MATS.redOn : MATS.redOff;

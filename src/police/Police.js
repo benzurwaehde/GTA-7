@@ -11,6 +11,9 @@ const CAR_TARGET = [0, 0, 2, 3, 4, 5];
 const SHOOT_CD = [0, 0, 1.4, 1.1, 0.8, 0.6];
 const SHOOT_DMG = [0, 0, 3, 4, 5, 7];
 const FORGET_TIME = 20;
+const LANE = CITY.roadWidth / 4;      // lane center offset from the road center (matches vehicles/traffic.js)
+const FAR = 60;                       // beyond this distance police cars keep to the right lane
+const BLOCK_DIST = 85;                // roadblock distance ahead of the player
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 // Shortest path over the road-intersection grid (BFS). Returns [{x,z}...] from start to goal.
@@ -36,7 +39,7 @@ function roadPath(si, sj, gi, gj) {
 
 
 // Pure-pursuit target: nearest point on the polyline plus `look` meters ahead along it.
-function pursuitTarget(path, x, z, look) {
+function pursuitTarget(path, x, z, look, out) {
   if (!path || path.length < 2) return null;
   let bi = 0, bt = 0, bd = Infinity;
   for (let i = 0; i < path.length - 1; i++) {
@@ -50,7 +53,7 @@ function pursuitTarget(path, x, z, look) {
   for (;;) {
     const a = path[i], b = path[i + 1], l = Math.hypot(b.x - a.x, b.z - a.z);
     const left = l * (1 - t);
-    if (rem <= left || i >= path.length - 2) { const k = Math.min(1, t + rem / (l || 1)); return { x: a.x + (b.x - a.x) * k, z: a.z + (b.z - a.z) * k }; }
+    if (rem <= left || i >= path.length - 2) { const k = Math.min(1, t + rem / (l || 1)); out.x = a.x + (b.x - a.x) * k; out.z = a.z + (b.z - a.z) * k; return out; }
     rem -= left; i++; t = 0;
   }
 }
@@ -65,6 +68,8 @@ export class Police {
     this.bustCd = 0;
     this.cops = [];      // foot cops (ped objects)
     this.cars = [];      // { vehicle, state, ... }
+    this.block = null;   // active roadblock { cars: [entry, entry] }
+    this.blockT = 0.5; this.blockTry = 0;
     this.grid = new ColliderGrid(game);
     this.footTimer = 0; this.carTimer = 0;
     this.noCars = false;
@@ -73,7 +78,10 @@ export class Police {
     this.crimeCd = 0;
     this.lastShotT = -99;
     this.lastHealth = new WeakMap();
-    this.pPrev = null; this.pSpeed = 0;
+    this.pHave = false; this.pPx = 0; this.pPz = 0; this.pSpeed = 0;
+    this._pt = { x: 0, z: 0 }; this._ctl = { throttle: 0, steer: 0, brake: 0, handbrake: false };
+    this._mv = { x: 0, z: 0 }; this._tgt = { x: 0, z: 0 };   // scratch results for foot-cop movement
+    this.noCarsT = 0; this.blockDbg = '';
     this.tracers = [];
     this.elapsed = 0;
 
@@ -194,18 +202,29 @@ export class Police {
     this._watchPoliceCars();
 
     const pp = playerPos(g);
-    if (this.pPrev) this.pSpeed = Math.hypot(pp.x - this.pPrev.x, pp.z - this.pPrev.z) / Math.max(dt, 1e-4);
-    this.pPrev = { x: pp.x, z: pp.z };
+    if (this.pHave) this.pSpeed = Math.hypot(pp.x - this.pPx, pp.z - this.pPz) / Math.max(dt, 1e-4);
+    this.pPx = pp.x; this.pPz = pp.z; this.pHave = true;
+    if (this.noCars && (this.noCarsT -= dt) <= 0) this.noCars = false;   // vehicle spawning may work again
     const alive = g.player ? g.player.alive !== false : true;
 
-    this.cops = this.cops.filter(c => this.game.peds?.list.includes(c) && c.alive);
-    this.cars = this.cars.filter(c => !c.vehicle.destroyed && (c.state === 'parked' || c.vehicle.driver === 'police' || c.vehicle.driver === null));
+    // in-place compaction (no per-frame arrays)
+    const pl = g.peds?.list;
+    let w = 0;
+    for (let i = 0; i < this.cops.length; i++) { const c = this.cops[i]; if (pl && pl.includes(c) && c.alive) this.cops[w++] = c; }
+    this.cops.length = w;
+    w = 0;
+    for (let i = 0; i < this.cars.length; i++) {
+      const c = this.cars[i];
+      if (!c.vehicle.destroyed && (c.state === 'parked' || c.vehicle.driver === 'police' || c.vehicle.driver === null)) this.cars[w++] = c;
+    }
+    this.cars.length = w;
     for (const c of this.cars) if (c.state !== 'parked' && c.state !== 'leave' && c.vehicle.driver !== 'police') c.state = 'parked';
 
     if (this.wanted > 0) {
       if (alive) {
         this._spawnLogic(dt, pp);
         for (const c of this.cars) this._updateCar(c, dt, pp);
+        this._roadblock(dt, pp);
         for (const c of this.cops) this._updateCop(c, dt, pp);
         this._evasion(dt, pp);
         this._busting(dt, pp);
@@ -222,7 +241,8 @@ export class Police {
     const L = this.wanted;
     let footWant = FOOT_TARGET[L], carWant = CAR_TARGET[L];
     if (this.noCars) { footWant += carWant; carWant = 0; }
-    const activeCars = this.cars.filter(c => c.state !== 'leave').length;
+    let activeCars = 0;
+    for (let i = 0; i < this.cars.length; i++) { const c = this.cars[i]; if (c.state !== 'leave' && !c.block) activeCars++; }
     const activeCops = this.cops.length;
     this.footTimer -= dt; this.carTimer -= dt;
     if (activeCops < footWant && activeCops < 12 && this.footTimer <= 0) {
@@ -234,12 +254,12 @@ export class Police {
       this._spawnCar(pp);
     }
     // recycle units that are hopelessly far away or stuck
-    for (const c of this.cops.slice()) {
-      const d = Math.hypot(c.position.x - pp.x, c.position.z - pp.z);
+    for (let i = this.cops.length - 1; i >= 0; i--) {
+      const c = this.cops[i], d = Math.hypot(c.position.x - pp.x, c.position.z - pp.z);
       if (d > 170) this._removeCop(c);
     }
-    for (const c of this.cars.slice()) {
-      const d = Math.hypot(c.vehicle.position.x - pp.x, c.vehicle.position.z - pp.z);
+    for (let i = this.cars.length - 1; i >= 0; i--) {
+      const c = this.cars[i], d = Math.hypot(c.vehicle.position.x - pp.x, c.vehicle.position.z - pp.z);
       if (d > 230 || (c.state === 'parked' && d > 120 && !inView(this.game, c.vehicle.position.x, c.vehicle.position.z))) this._removeCar(c);
     }
   }
@@ -288,11 +308,11 @@ export class Police {
 
   _spawnCar(pp) {
     const veh = this.game.vehicles;
-    if (!veh?.spawn) { this.noCars = true; return; }
+    if (!veh?.spawn) { this.noCars = true; this.noCarsT = 5; return; }
     const sp = this._roadSpawnPoint(pp);
     if (!sp) return;
     const v = veh.spawn('police', sp.x, sp.z, sp.heading, { driver: 'police' });
-    if (!v) { this.noCars = true; return; }
+    if (!v) { this.noCars = true; this.noCarsT = 5; return; }
     if (v.driver !== 'police') veh.enter?.(v, 'police');
     v.driver = 'police';
     v.sirenOn = true;
@@ -311,9 +331,10 @@ export class Police {
   _despawnAll() {
     for (const c of this.cops.slice()) this._removeCop(c);
     for (const c of this.cars.slice()) this._removeCar(c);
-    this.cops = []; this.cars = [];
+    this.cops = []; this.cars = []; this.block = null; this.blockT = 0.5; this.blockTry = 0;
   }
   _releaseUnits() {
+    this.block = null;
     for (const c of this.cars) { if (c.state !== 'parked') c.state = 'leave'; c.leaveT = 0; c.vehicle.sirenOn = false; }
     for (const c of this.cops) { c.cop.leave = true; c.cop.leaveT = 0; }
   }
@@ -322,7 +343,7 @@ export class Police {
   _updateCar(c, dt, pp) {
     const v = c.vehicle, g = this.game;
     c.age += dt;
-    if (c.state === 'parked') { v.setControls?.({ throttle: 0, steer: 0, brake: 1, handbrake: true }); return; }
+    if (c.state === 'parked') { const k = this._ctl; k.throttle = 0; k.steer = 0; k.brake = 1; k.handbrake = true; v.setControls?.(k); return; }
     v.sirenOn = true;
     const pv = g.player?.vehicle;
     const tx0 = pv ? pv.position.x + Math.sin(pv.heading) * pv.speed * 0.4 : pp.x;
@@ -346,11 +367,17 @@ export class Police {
         c.path.push({ x: pp.x, z: pp.z });
       }
       if (d > 30) {
-        const t = pursuitTarget(c.path, v.position.x, v.position.z, 18);
+        const t = pursuitTarget(c.path, v.position.x, v.position.z, 18, this._pt);
         if (t) { tx = t.x; tz = t.z; }
       }
     }
-    this._drive(c, dt, tx, tz, { aggressive: this.wanted >= 4 || !!pv, slowNear: onFoot && d < 40 });
+    // far from the target: stay in the right lane (shift the aim point to the right of the travel direction)
+    const laneK = clamp((d - (FAR - 15)) / 15, 0, 1);
+    if (laneK > 0) {
+      const lx = tx - v.position.x, lz = tz - v.position.z, ll = Math.hypot(lx, lz) || 1;
+      tx += -lz / ll * LANE * laneK; tz += lx / ll * LANE * laneK;
+    }
+    this._drive(c, dt, tx, tz, { aggressive: this.wanted >= 4 || !!pv, slowNear: onFoot && d < 40, avoid: d > 40 });
   }
 
   _drive(c, dt, tx, tz, opt) {
@@ -359,12 +386,30 @@ export class Police {
     const d = Math.hypot(dx, dz);
     let err = wrapAngle(Math.atan2(dx, dz) - v.heading);
     let raw = clamp(err * 1.6, -1, 1);
-    c.dbg = [tx|0, tz|0, err.toFixed(2), raw.toFixed(2)];
     let throttle = 1, brake = 0, handbrake = false;
     const sp = v.speed || 0;
 
     c.lastHeading = v.heading;
 
+    // dodge traffic ahead: steer around it, brake if it is close and in our way
+    if (opt.avoid) {
+      const hx = Math.sin(v.heading), hz = Math.cos(v.heading), look = 12 + Math.abs(sp) * 0.7, pv = this.game.player?.vehicle;
+      let best = null, bf = look, bl = 0;
+      for (const o of this.game.vehicles?.list || []) {
+        if (o === v || o === pv || o.destroyed || !o.position) continue;
+        const rx = o.position.x - v.position.x, rz = o.position.z - v.position.z;
+        const f = rx * hx + rz * hz;
+        if (f < 1 || f > bf) continue;
+        const l = rx * -hz + rz * hx;           // lateral offset, positive = to the right
+        if (Math.abs(l) > 3.2) continue;
+        best = o; bf = f; bl = l;
+      }
+      if (best) {
+        const k = 1 - Math.abs(bl) / 3.2;
+        raw = clamp(raw + (bl >= 0 ? 1 : -1) * 0.9 * (0.4 + k), -1, 1);   // obstacle on the right -> steer left
+        if (bf < 6 + Math.abs(sp) * 0.25 && Math.abs(bl) < 2) { throttle = 0; brake = Math.max(brake, 0.6); }
+      }
+    }
     const maxSp = 26 + this.wanted * 3 + (opt.aggressive ? 6 : 0);
     if (Math.abs(err) > 1.1 && sp > 9) { throttle = 0; brake = 0.7; }
     else if (Math.abs(err) > 0.6 && sp > 13) { throttle = 0; brake = 0.4; }
@@ -380,7 +425,8 @@ export class Police {
     } else { c.stuckT = 0; c.totalStuck = Math.max(0, c.totalStuck - dt * 0.5); }
 
     c.lastRaw = c.reverseT > 0 ? 0 : raw;
-    v.setControls?.({ throttle, steer: raw * this.steerCal, brake, handbrake });
+    const k = this._ctl; k.throttle = throttle; k.steer = raw * this.steerCal; k.brake = brake; k.handbrake = handbrake;
+    v.setControls?.(k);
   }
 
   _dismount(c, pp) {
@@ -400,6 +446,62 @@ export class Police {
     v.sirenOn = true;
   }
 
+  // ---------- roadblocks (4+ stars) ----------
+  _roadblock(dt, pp) {
+    const g = this.game, B = this.block;
+    if (B) {
+      let alive = 0;
+      for (let i = 0; i < B.cars.length; i++) if (this.cars.includes(B.cars[i])) alive++;
+      const p = B.cars[0].vehicle.position, d = Math.hypot(p.x - pp.x, p.z - pp.z);
+      const dot = (p.x - pp.x) * B.fx + (p.z - pp.z) * B.fz;   // > 0: still ahead of the player
+      const gone = alive < B.cars.length || d > 170 || (dot < 0 && d > 45) || (this.wanted < 4 && !inView(g, p.x, p.z));
+      if (gone) { for (let i = B.cars.length - 1; i >= 0; i--) this._removeCar(B.cars[i]); this.block = null; this.blockT = 8; }
+      return;
+    }
+    if (this.wanted < 4) return;
+    this.blockT -= dt;
+    if (this.blockT > 0) return;
+    // Retry quickly on any failure. (Earlier version gave up for good via noCars, and silently on the map edge.)
+    this.blockT = 1;
+    if (!g.vehicles?.spawn) { this.blockDbg = 'no-spawn-fn'; return; }
+    const pv = g.player?.vehicle;
+    let fx, fz;
+    if (pv && Math.abs(pv.speed) > 2) { fx = Math.sin(pv.heading) * Math.sign(pv.speed); fz = Math.cos(pv.heading) * Math.sign(pv.speed); }
+    else { const h = g.player?.heading ?? 0; fx = Math.sin(h); fz = Math.cos(h); }
+    let alongX = Math.abs(fx) > Math.abs(fz);
+    let s = (alongX ? fx : fz) >= 0 ? 1 : -1;
+    const lim = CITY.half - 15;
+    // try ahead first; if that runs off the map try the other direction, then the other axis
+    let a = 0, ok = false;
+    for (let t = 0; t < 3 && !ok; t++) {
+      if (t === 1) s = -s; else if (t === 2) { alongX = !alongX; s = (alongX ? pp.x : pp.z) > 0 ? -1 : 1; }
+      const dist = BLOCK_DIST - this.blockTry * 7;       // vary the distance on retries
+      a = (alongX ? pp.x : pp.z) + s * Math.max(55, dist);
+      const rc = ROAD_LINES[nearestIndex(a)];
+      if (Math.abs(a - rc) < 16) a = rc + (a >= rc ? 1 : -1) * 18;   // keep it off the junction itself
+      a = clamp(a, -lim, lim);
+      const rc2 = ROAD_LINES[nearestIndex(a)];
+      ok = Math.abs(a - rc2) >= 14;
+    }
+    if (!ok) { this.blockDbg = 'edge'; this.blockTry++; return; }
+    const rl = ROAD_LINES[nearestIndex(alongX ? pp.z : pp.x)];
+    const base = alongX ? 0 : Math.PI / 2, cars = [];
+    for (let i = 0; i < 2; i++) {
+      const off = (i ? 1 : -1) * 3.2;
+      const x = alongX ? a : rl + off, z = alongX ? rl + off : a;
+      const v = g.vehicles.spawn('police', x, z, base + (i ? 0.25 : -0.2), { driver: 'police' });
+      if (!v) { this.blockDbg = 'spawn-failed'; break; }
+      if (v.driver !== 'police') g.vehicles.enter?.(v, 'police');
+      v.driver = 'police'; v.sirenOn = true;
+      const e = { vehicle: v, state: 'parked', block: true, stuckT: 0, reverseT: 0, revSteer: 1, path: null, pathT: 0, lastHeading: v.heading, lastRaw: 0, totalStuck: 0, age: 0, leaveT: 0 };
+      this.cars.push(e); cars.push(e);
+    }
+    if (cars.length < 2) { for (const c of cars) this._removeCar(c); this.blockTry++; return; }
+    this.blockTry = 0; this.blockDbg = 'ok';
+    this.block = { cars, fx: alongX ? s : 0, fz: alongX ? 0 : s };
+    g.events?.emit('hud:message', { text: 'Roadblock ahead!', duration: 2 });
+  }
+
   // ---------- cops on foot ----------
   _updateCop(c, dt, pp) {
     const L = this.wanted, ai = c.cop;
@@ -413,29 +515,11 @@ export class Police {
     const stopDist = aggro ? 9 : 15;
 
     let vx = 0, vz = 0, aim = null;
-    const moveTo = (tx, tz, speed) => {
-      const ddx = tx - px, ddz = tz - pz, dd = Math.hypot(ddx, ddz) || 1;
-      vx = ddx / dd * speed; vz = ddz / dd * speed;
-    };
-
-    const chase = () => {
-      let tx = pp.x, tz = pp.z;
-      if (!los || d > 45) {
-        ai.wpT = (ai.wpT || 0) - dt;
-        if (ai.wp && (Math.hypot(ai.wp.x - px, ai.wp.z - pz) < 2.5 || ai.wpT <= 0)) ai.wp = null;
-        if (!ai.wp) {
-          const path = sidewalkPath(nearestNode(px, pz), nearestNode(pp.x, pp.z));
-          const wp = path && path.map(nodePos).find(p => Math.hypot(p.x - px, p.z - pz) > 2.5);
-          if (wp) { ai.wp = wp; ai.wpT = 8; }
-        }
-        if (ai.wp) { tx = ai.wp.x; tz = ai.wp.z; }
-      } else ai.wp = null;
-      return [tx, tz];
-    };
+    const mv = this._mv;
 
     if (!armed) {
       // 1 star: run up and arrest
-      if (d > 1.3) { const [tx, tz] = chase(); moveTo(tx, tz, d > 12 ? 5.2 : 3.4); }
+      if (d > 1.3) { this._chaseTarget(ai, px, pz, pp, los, d, dt); this._moveTo(px, pz, d > 12 ? 5.2 : 3.4); vx = mv.x; vz = mv.z; }
       aim = Math.atan2(dx, dz);
     } else if (los && d < stopDist) {
       aim = Math.atan2(dx, dz);
@@ -446,7 +530,7 @@ export class Police {
       if (d < 5) { vx -= dx / d * 2; vz -= dz / d * 2; }
       else if (aggro && d > 8) { vx += dx / d * 1.8; vz += dz / d * 1.8; }
     } else {
-      const [tx, tz] = chase(); moveTo(tx, tz, 5.4);
+      this._chaseTarget(ai, px, pz, pp, los, d, dt); this._moveTo(px, pz, 5.4); vx = mv.x; vz = mv.z;
       if (los) aim = Math.atan2(dx, dz);
     }
 
@@ -465,6 +549,27 @@ export class Police {
       ai.cd = SHOOT_CD[L] * (0.8 + Math.random() * 0.5);
       this._shoot(c, pp, d, L);
     }
+  }
+
+  // writes the velocity toward this._tgt into this._mv
+  _moveTo(px, pz, speed) {
+    const t = this._tgt, ddx = t.x - px, ddz = t.z - pz, dd = Math.hypot(ddx, ddz) || 1;
+    this._mv.x = ddx / dd * speed; this._mv.z = ddz / dd * speed;
+  }
+  // writes the chase target (player or the next sidewalk waypoint) into this._tgt
+  _chaseTarget(ai, px, pz, pp, los, d, dt) {
+    const t = this._tgt;
+    t.x = pp.x; t.z = pp.z;
+    if (!los || d > 45) {
+      ai.wpT = (ai.wpT || 0) - dt;
+      if (ai.wp && (Math.hypot(ai.wp.x - px, ai.wp.z - pz) < 2.5 || ai.wpT <= 0)) ai.wp = null;
+      if (!ai.wp) {
+        const path = sidewalkPath(nearestNode(px, pz), nearestNode(pp.x, pp.z));
+        const wp = path && path.map(nodePos).find(p => Math.hypot(p.x - px, p.z - pz) > 2.5);
+        if (wp) { ai.wp = wp; ai.wpT = 8; }
+      }
+      if (ai.wp) { t.x = ai.wp.x; t.z = ai.wp.z; }
+    } else ai.wp = null;
   }
 
   _shoot(c, pp, d, L) {
@@ -541,13 +646,14 @@ export class Police {
 
   // ---------- wanted == 0 cleanup ----------
   _updateLeaving(dt, pp) {
-    for (const c of this.cops.slice()) {
-      const ai = c.cop; ai.leaveT = (ai.leaveT || 0) + dt;
+    for (let i = this.cops.length - 1; i >= 0; i--) {
+      const c = this.cops[i], ai = c.cop; ai.leaveT = (ai.leaveT || 0) + dt;
       const dx = c.position.x - pp.x, dz = c.position.z - pp.z, d = Math.hypot(dx, dz) || 1;
       c.cmd.vx = dx / d * 2.4; c.cmd.vz = dz / d * 2.4; c.aim = null;
       if (d > 110 || (ai.leaveT > 15 && !inView(this.game, c.position.x, c.position.z))) this._removeCop(c);
     }
-    for (const c of this.cars.slice()) {
+    for (let i = this.cars.length - 1; i >= 0; i--) {
+      const c = this.cars[i];
       c.leaveT += dt;
       const p = c.vehicle.position, dx = p.x - pp.x, dz = p.z - pp.z, d = Math.hypot(dx, dz) || 1;
       if (c.state === 'leave') {

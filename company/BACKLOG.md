@@ -8,14 +8,23 @@
 - [x] Experience: HUD, minimap, 3 missions, pause/title screen
 - [x] Audio: SFX, engine, sirens, radio
 
-## Sprint 2 — "Living city" (next)
-- [ ] Traffic lights at intersections; npc drivers react to being hit / flee
+## Sprint 2 — "Runder machen" ✅ done (siehe SPRINTS.md)
+
+## Sprint 3 — "Living city" (next)
 - [ ] Police: lane-correct pursuit, roadblocks at 4★, helicopter at 5★
 - [ ] Peds: arm swing, look before crossing, varied archetypes, fight back sometimes
 - [ ] Player: vertical aim + right-mouse aim mode, reload, weapon/armor/health pickups, ammu shop
 - [ ] World: storefronts & doors on ground floors, night headlights/neon signs, skid marks
-- [ ] Save/load (money, completed missions, safehouse) in localStorage
 - [ ] Mobile/touch controls
+
+## Aus Sprint 2 offen (chef-feedback.md)
+- [ ] Explosion: verkohlte Trümmer statt roter Würfel
+- [ ] Zielmodus: Kamera weiter rechts, Figur verdeckt weniger; castRay auf Fahrzeug-Kapsel
+- [ ] Allokationen pro Schuss (Weapons.js), Rest-Allokationen in Police._evasion/_updateCars, VehicleManager carVsCar
+- [ ] Nachtfenster der Hochhäuser variabler, Kamera-Kollision gegen Ladenfronten
+- [ ] Draw Calls an fester Messposition erfassen, Passanten-LOD (> 60 m nur Oberkörper)
+- [ ] Straßensperre: NPC-Verkehr umleiten. Save: Position außerhalb von Gebäuden erzwingen
+- [ ] Chase-Mission: faires Aufgeben ab 300 m testen
 
 ## Later ideas
 - Save/load (localStorage), garages, weapon shops, more vehicle types (bikes, boats), water & beach district

@@ -92,4 +92,29 @@ export const SFX = {
     tone(ctx, out, t, 'triangle', 164.8, 80, 2.4, 0.25 * v, 0.1, 500);
     noiseBurst(ctx, out, noise, t, 'lowpass', 800, 60, 2.5, 0.35 * v, 0.7, 0.05);
   },
+  // short, quiet step; random pitch / brightness so repeated steps never sound identical
+  footstep(ctx, out, noise, t, v) {
+    const f = 280 + Math.random() * 260, q = 0.8 + Math.random() * 0.8;
+    noiseBurst(ctx, out, noise, t, 'lowpass', f * 3, f, 0.07, 0.16 * v, q, 0.003);
+    tone(ctx, out, t, 'sine', 90 + Math.random() * 40, 45, 0.06, 0.12 * v, 0.003);
+    if (Math.random() < 0.5) noiseBurst(ctx, out, noise, t + 0.012, 'highpass', 2500 + Math.random() * 1500, 2000, 0.03, 0.04 * v, 0.7, 0.002);
+  },
+  // mechanical reload: mag out, mag in, slide rack
+  reload(ctx, out, noise, t, v) {
+    const click = (tt, f, pk) => {
+      noiseBurst(ctx, out, noise, tt, 'bandpass', f, f * 0.6, 0.035, pk * v, 3, 0.001);
+      tone(ctx, out, tt, 'square', f * 0.5, f * 0.3, 0.03, 0.05 * v, 0.001, 2500);
+    };
+    click(t, 1900, 0.6);                    // mag release
+    tone(ctx, out, t + 0.05, 'sine', 120, 70, 0.1, 0.25 * v);   // mag drops
+    click(t + 0.42, 1400, 0.7);             // mag seated
+    tone(ctx, out, t + 0.42, 'sine', 160, 90, 0.08, 0.3 * v);
+    noiseBurst(ctx, out, noise, t + 0.62, 'bandpass', 3200, 1200, 0.09, 0.5 * v, 2, 0.003); // slide back
+    click(t + 0.74, 2300, 0.8);             // slide forward
+  },
+  // dry click on an empty magazine
+  empty(ctx, out, noise, t, v) {
+    noiseBurst(ctx, out, noise, t, 'bandpass', 2400, 1500, 0.03, 0.55 * v, 4, 0.001);
+    tone(ctx, out, t, 'square', 900, 500, 0.025, 0.06 * v, 0.001, 3000);
+  },
 };

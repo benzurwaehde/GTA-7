@@ -1,7 +1,10 @@
-// Procedural low-poly car models. Geometry is built once per type (merged, vertex-colored) and shared by all cars.
+// Low-poly car models. Geometry is built once per type (merged, vertex-colored) and shared by all cars.
+// Source: Blender GLB (public/models/car_<type>.glb, see tools/blender/car_*.py) via getModel(); the procedural
+// boxes below stay as fallback when a GLB is missing.
 // Per car draw calls: body, headlights, taillights, front wheels, rear wheels (+2 for police light bar).
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { getModel } from '../core/assets.js';
 
 // Physics + dimension spec per type. Steering: positive steer = RIGHT turn (D key).
 export const SPECS = {
@@ -46,6 +49,59 @@ function wheelPair(r, track, width = 0.26) {
 }
 
 const cache = {};
+
+// ---- GLB -> merged geometries ---------------------------------------------------------------
+const GLB_COLORS = { Paint: 0xffffff, Glass: GLASS, Trim: DARK, Rim: 0xaab0b6 };
+const _col = new THREE.Color();
+
+// Bakes the world transform of a mesh into a position/normal/color-only geometry (so everything merges).
+function bake(mesh, hex, offset) {
+  const g = mesh.geometry.clone();
+  g.applyMatrix4(mesh.matrixWorld);
+  if (offset) g.translate(offset.x, offset.y, offset.z);
+  for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'normal') g.deleteAttribute(k);
+  const out = g.index ? g.toNonIndexed() : g;
+  const n = out.attributes.position.count, a = new Float32Array(n * 3);
+  _col.set(hex);
+  for (let i = 0; i < n; i++) { a[i * 3] = _col.r; a[i * 3 + 1] = _col.g; a[i * 3 + 2] = _col.b; }
+  out.setAttribute('color', new THREE.BufferAttribute(a, 3));
+  return out;
+}
+
+function pathName(o) { let s = ''; for (let p = o; p; p = p.parent) s += (p.name || '') + '/'; return s; }
+
+function buildGeometriesGLB(type) {
+  const root = getModel('car_' + type);
+  if (!root) return null;
+  root.updateMatrixWorld(true);
+  const r = SPECS[type].wheelR;
+  const body = [], head = [], tail = [], red = [], blue = [], wF = [], wR = [];
+  const axle = n => { const o = root.getObjectByName(n); return o ? new THREE.Vector3().setFromMatrixPosition(o.matrixWorld).z : null; };
+  const zf = axle('wheel_FL'), zr = axle('wheel_RL');
+  if (zf === null || zr === null) return null;
+  root.traverse(o => {
+    if (!o.isMesh) return;
+    const mn = (o.material?.name || '').replace(/\.\d+$/, ''), path = pathName(o), nm = path.toLowerCase();
+    const wheel = /wheel_([FR])[LR]/.exec(path);
+    if (wheel) {
+      const hex = mn === 'Trim' ? 0x1a1a1c : mn === 'Paint' ? 0xe8e8e8 : (GLB_COLORS[mn] ?? 0xaab0b6);
+      const front = wheel[1] === 'F';
+      (front ? wF : wR).push(bake(o, hex, { x: 0, y: -r, z: -(front ? zf : zr) }));
+    } else if (nm.includes('taillight')) tail.push(bake(o, WHITE));
+    else if (nm.includes('headlight') || mn === 'Headlight') head.push(bake(o, WHITE));
+    else if (mn === 'Siren_Red') red.push(bake(o, WHITE));
+    else if (mn === 'Siren_Blue') blue.push(bake(o, WHITE));
+    else if (mn === 'Taillight') tail.push(bake(o, WHITE));
+    else body.push(bake(o, GLB_COLORS[mn] ?? DARK));
+  });
+  const merge = list => (list.length ? mergeGeometries(list) : null);
+  const out = { body: merge(body), head: merge(head), tail: merge(tail), wheelF: merge(wF), wheelR: merge(wR), zf, zr };
+  if (red.length) { out.red = merge(red); out.blue = merge(blue); }
+  for (const g of [...body, ...head, ...tail, ...red, ...blue, ...wF, ...wR]) g.dispose();
+  return out;
+}
+
+
 
 function buildGeometries(type) {
   const s = SPECS[type];
@@ -137,6 +193,8 @@ export const MATS = {
   wheel: new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.9 }),
   head: new THREE.MeshBasicMaterial({ color: 0xfff0b8, vertexColors: false }),
   tailOff: new THREE.MeshBasicMaterial({ color: 0x5a0c0c }),
+  headIdle: new THREE.MeshBasicMaterial({ color: 0x8c8a7c }),   // lamps of parked (undriven) cars never glow
+  tailIdle: new THREE.MeshBasicMaterial({ color: 0x4a0c0c }),
   tailOn: new THREE.MeshBasicMaterial({ color: 0xff2a2a }),
   off: new THREE.MeshBasicMaterial({ color: 0x050505 }),
   redOn: new THREE.MeshBasicMaterial({ color: 0xff2020 }),
@@ -145,16 +203,24 @@ export const MATS = {
   blueOff: new THREE.MeshBasicMaterial({ color: 0x081844 }),
 };
 // Geometry vertex colors baked on head/tail geometries are white; tint via material colour.
+// Night glow: all cars share these materials, so one call per frame is enough. f = 0 (day) .. 1 (night).
+const _day = { head: new THREE.Color(0xc8c4ae), tailOff: new THREE.Color(0x6a1010), tailOn: new THREE.Color(0xff2a2a) };
+const _night = { head: new THREE.Color(0xfff4c4).multiplyScalar(1.7), tailOff: new THREE.Color(0xc01818).multiplyScalar(1.1), tailOn: new THREE.Color(0xff3030).multiplyScalar(1.9) };
+export function setCarNight(f) {
+  MATS.head.color.lerpColors(_day.head, _night.head, f);
+  MATS.tailOff.color.lerpColors(_day.tailOff, _night.tailOff, f);
+  MATS.tailOn.color.lerpColors(_day.tailOn, _night.tailOn, f);
+}
 
 export function buildCarModel(type, paint) {
-  const g = cache[type] || (cache[type] = buildGeometries(type));
+  const g = cache[type] || (cache[type] = buildGeometriesGLB(type) || buildGeometries(type));
   const root = new THREE.Group();
   const chassis = new THREE.Group();
   root.add(chassis);
   const body = new THREE.Mesh(g.body, type === 'police' ? paintMaterial(0xffffff) : paintMaterial(paint));
   body.castShadow = true;
-  const head = new THREE.Mesh(g.head, MATS.head);
-  const tail = new THREE.Mesh(g.tail, MATS.tailOff);
+  const head = new THREE.Mesh(g.head, MATS.headIdle);
+  const tail = new THREE.Mesh(g.tail, MATS.tailIdle);
   chassis.add(body, head, tail);
   const r = SPECS[type].wheelR;
   const mk = (geo, z, steer) => {
@@ -163,7 +229,7 @@ export function buildCarModel(type, paint) {
     return { grp, spin };
   };
   const wf = mk(g.wheelF, g.zf), wr = mk(g.wheelR, g.zr);
-  const m = { root, chassis, body, head, tail, wheelFGroup: wf.grp, wheelF: wf.spin, wheelR: wr.spin };
+  const m = { root, chassis, body, head, tail, wheelFGroup: wf.grp, wheelF: wf.spin, wheelR: wr.spin, zr: g.zr };
   if (g.red) {
     m.red = new THREE.Mesh(g.red, MATS.redOff); m.blue = new THREE.Mesh(g.blue, MATS.blueOff);
     chassis.add(m.red, m.blue);

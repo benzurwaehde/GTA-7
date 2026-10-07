@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { Vehicle } from './Vehicle.js';
 import { Effects } from './effects.js';
+import { setCarNight } from './models.js';
 import { driveNPC, initAI, pickLanePoint, pickCurbPoint } from './traffic.js';
 
 const TRAFFIC_TARGET = 25, PARKED_TARGET = 30;
@@ -16,6 +17,13 @@ export class VehicleManager {
     this.manageT = 0;
     this.initialized = false;
     this.honkT = 0;
+    // Real headlight cone for the player's car (one SpotLight only; NPC cars use emissive + road light pools).
+    // It stays in the scene with intensity 0 by day, so the shader light count never changes.
+    this.headSpot = new THREE.SpotLight(0xfff0cc, 0, 75, 0.62, 0.65, 1.1);
+    this.headSpot.castShadow = false;
+    this.headSpot.position.set(0, -50, 0);
+    game.scene.add(this.headSpot, this.headSpot.target);
+    this.nightF = 0;
   }
 
   // ---------------- public API ----------------
@@ -145,6 +153,14 @@ export class VehicleManager {
       v.crashCd = 0.25;
       ev.emit('vehicle:crash', { vehicle: v, impact, other: o || null });
       if (v === a) this.game.audio?.play?.('crash', { x: v.position.x, z: v.position.z, volume: Math.min(1, impact / 15) });
+      // an NPC car hit by the player / police: honk, and on a hard hit speed away for a few seconds
+      if (v.driver === 'npc' && o && (o.driver === 'player' || o.driver === 'police') && v.ai && impact > 3.5 && !v.destroyed) {
+        if (!(v.ai.hitHonkCd > 0)) {
+          v.ai.hitHonkCd = 3;
+          this.game.audio?.play?.('horn', { x: v.position.x, z: v.position.z });
+        }
+        if (impact > 8) v.ai.fleeT = 5;
+      }
     }
   }
 
@@ -176,9 +192,58 @@ export class VehicleManager {
       this.emitEffects(v, dt);
     }
     this.effects.update(dt);
+    this.updateNight(px, pz, pp);
+  }
+
+  // Night look: shared lamp materials, player's spot cone, additive light pools on the road for nearby driven cars.
+  updateNight(px, pz, pp) {
+    const w = this.game.world;
+    const nf = w?.nightFactor ?? (w?.isNight ? 1 : 0);
+    if (Math.abs(nf - this.nightF) > 0.005 || nf === 0 !== (this.nightF === 0)) { this.nightF = nf; setCarNight(nf); this.effects.setNight(nf); }
+    const spot = this.headSpot, pv = this.game.player?.vehicle;
+    if (nf > 0.03 && pv && !pv.destroyed) {
+      const fx = Math.sin(pv.heading), fz = Math.cos(pv.heading), L = pv.spec.L / 2;
+      spot.position.set(pv.position.x + fx * (L - 0.3), 0.85, pv.position.z + fz * (L - 0.3));
+      spot.target.position.set(pv.position.x + fx * (L + 22), 0, pv.position.z + fz * (L + 22));
+      spot.intensity = 260 * nf;
+    } else { spot.intensity = 0; spot.position.y = -50; }
+    const pools = this.effects.pools;
+    if (nf < 0.03) { if (pools.n) { pools.begin(); pools.end(); } return; }
+    pools.begin();
+    for (const v of this.list) {
+      if (v.driver === null || v.destroyed) continue;
+      const dx = v.position.x - px, dz = v.position.z - pz;
+      if (dx * dx + dz * dz > 130 * 130) continue;
+      const fx = Math.sin(v.heading), fz = Math.cos(v.heading), L = v.spec.L / 2, h = v.heading;
+      const own = v === pv ? 0.55 : 1;
+      pools.add(v.position.x + fx * (L + 4.2), v.position.z + fz * (L + 4.2), h, 4.6, 10.5, 0.55 * nf * own, 0.48 * nf * own, 0.32 * nf * own);
+      const br = v.braking ? 0.95 : 0.4;
+      pools.add(v.position.x - fx * (L + 1.0), v.position.z - fz * (L + 1.0), h, 3.4, 3.2, br * nf, 0.06 * br * nf, 0.03 * br * nf);
+    }
+    pools.end();
+  }
+
+  // Tire marks while drifting, handbraking or braking hard (rear wheels only), near the player.
+  emitSkid(v, dt) {
+    const sp = Math.hypot(v.vx, v.vz);
+    if (sp < 4) { v._skidD = 0; return; }
+    const fx = Math.sin(v.heading), fz = Math.cos(v.heading);
+    const slip = Math.abs(v.vx * -fz + v.vz * fx);
+    const c = v.controls;
+    if (!(slip > 2.4 || (c.handbrake && v.driver) || (c.brake > 0.8 && sp > 14) || (c.throttle < -0.5 && v.speed > 10))) { v._skidD = 0; return; }
+    const pp = this.game.player?.position;
+    if (pp && Math.abs(pp.x - v.position.x) + Math.abs(pp.z - v.position.z) > 140) return;
+    v._skidD = (v._skidD || 0) + sp * dt;
+    if (v._skidD < 0.6) return;
+    const d = v._skidD * 1.12;     // one quad per travelled stretch, centred half a stretch behind the wheel
+    v._skidD = 0;
+    const dir = Math.atan2(v.vx, v.vz), dx = v.vx / sp, dz = v.vz / sp, zr = v.model.zr ?? -v.spec.wb / 2, tr = v.spec.W / 2 - 0.12;
+    const bx = v.position.x + fx * zr - dx * d * 0.5, bz = v.position.z + fz * zr - dz * d * 0.5;
+    for (const s of [-1, 1]) this.effects.skid(bx + -fz * tr * s, bz + fx * tr * s, dir, d, 0.12);
   }
 
   emitEffects(v, dt) {
+    if (!v.destroyed && v.driver !== null) this.emitSkid(v, dt);
     let rate = 0, fire = 0;
     if (v.destroyed) { if (v.burnT > 0) { v.burnT -= dt; rate = 7; fire = 9; } else if (v.burnT > -20) { v.burnT -= dt; rate = 2; } }
     else if (v.health < 30) {
@@ -289,6 +354,8 @@ export class VehicleManager {
       const dx = v.position.x - px, dz = v.position.z - pz, d = Math.hypot(dx, dz);
       if (v.driver === 'npc' && !v.destroyed) {
         const idle = v.ai?.idle || 0;
+        // owned npc cars (e.g. a mission target) only despawn very far away
+        if (v.owned) { if (d > 450) this.remove(v); else traffic++; continue; }
         if (d > 200 || idle > 30 || (idle > 10 && d > 50 && !this.inView(v.position.x, v.position.z))) { this.remove(v); continue; }
         traffic++;
       } else if (v.destroyed) {

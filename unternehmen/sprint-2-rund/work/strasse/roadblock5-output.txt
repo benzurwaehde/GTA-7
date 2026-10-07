@@ -1,0 +1,9 @@
+A start=(-148,-120) yaw=0.00 -> block after 1.1s cars [[-151.2,-35],[-144.8,-35]] lastDbg=wanted:changed=4@1.1 | ok ok
+B start=(148,-120) yaw=0.00 -> block after 0.5s cars [[144.8,-35],[151.2,-35]] lastDbg=wanted:changed=0@2.2,wanted:changed=4@2.7 | ok ok
+C start=(0,5) yaw=1.57 -> block after 0.5s cars [[92,-3.2],[92,3.2]] lastDbg=wanted:changed=0@3.3,wanted:changed=4@3.8 | ok ok
+D start=(60,200) yaw=3.14 -> block after 0.5s cars [[70.8,115],[77.2,115]] lastDbg=wanted:changed=0@4.4,wanted:changed=4@4.9 | ok ok
+E start=(200,-60) yaw=0.00 -> block after 0.5s cars [[218.8,22.5],[225.2,22.5]] lastDbg=wanted:changed=0@5.5,wanted:changed=4@6.0 | ok ok
+F stub: first spawn fails start=(-148,-120) yaw=0.00 -> block after 1.6s cars [[-151.2,-42],[-144.8,-42]] lastDbg=wanted:changed=0@6.6,wanted:changed=4@7.1 | ok ok
+G noCars forced true start=(148,-120) yaw=0.00 -> block after 1.0s cars [[144.8,-35],[151.2,-35]] lastDbg=wanted:changed=0@8.7,wanted:changed=4@9.2 | ok ok
+ROADBLOCK 7/7 OK
+PARTIAL {}

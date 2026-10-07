@@ -3,9 +3,17 @@ import { Minimap } from './Minimap.js';
 
 const KEYS = [
   ['WASD', 'Move'], ['Shift', 'Sprint'], ['Space', 'Jump / Handbrake'], ['Mouse', 'Look'],
-  ['F', 'Enter / exit vehicle'], ['LMB / Ctrl', 'Shoot'], ['Q / E', 'Switch weapon'], ['H', 'Horn'],
-  ['R', 'Radio'], ['Esc', 'Pause'],
+  ['F', 'Enter / exit vehicle'], ['LMB / Ctrl', 'Shoot'], ['RMB', 'Aim'], ['R', 'Reload (on foot) / Radio'],
+  ['Q / E / Wheel', 'Switch weapon'], ['H', 'Horn'], ['Esc', 'Pause'],
 ];
+const VOL_KEY = 'gta7.volumes';
+const VOLUMES = [['master', 'Master'], ['music', 'Music'], ['sfx', 'SFX']];
+const loadVolumes = () => {
+  const d = { master: 0.8, music: 0.6, sfx: 1 };
+  try { const o = JSON.parse(localStorage.getItem(VOL_KEY) || '{}'); for (const [k] of VOLUMES) if (Number.isFinite(o[k])) d[k] = Math.min(1, Math.max(0, o[k])); } catch (e) { /* ignore */ }
+  return d;
+};
+const WEAPON_SPREAD = { pistol: 0.012, smg: 0.04 };
 const keysHtml = () => KEYS.map(([k, v]) => `<div><b>${k}</b>${v}</div>`).join('');
 const fmtMoney = n => '$' + Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 const el = (cls, html = '', tag = 'div') => { const e = document.createElement(tag); if (cls) e.className = cls; if (html) e.innerHTML = html; return e; };
@@ -24,6 +32,8 @@ export class HUD {
     this.lastBig = { text: '', t: -9 };
     this.pauseOpenedAt = -1;
     this.hadLock = false;
+    this.volumes = loadVolumes();
+    this.hitT = 0;
 
     const style = document.createElement('style'); style.textContent = HUD_CSS; document.head.appendChild(style);
     const root = this.root = el('', '', 'div'); root.id = 'hud-root'; root.classList.add('vb-hidden');
@@ -56,6 +66,9 @@ export class HUD {
     this.missionEl = el('vb-mission vb-hud', '<div class="t"></div><div class="o"></div><div class="p"></div><div class="tm"></div>');
     this.msgsEl = el('vb-msgs vb-hud');
     this.bigEl = el('vb-big');
+    // crosshair (screen center) + hit marker
+    this.crossEl = el('vb-cross', '<i class="u"></i><i class="d"></i><i class="l"></i><i class="r"></i><b></b>');
+    this.hitEl = el('vb-hitmark', '<i></i><i></i>');
 
     // title
     this.titleEl = el('vb-title', `<div class="g">GTA 7</div><h1>VICE BAY</h1><h2>OPEN CITY</h2>
@@ -70,10 +83,21 @@ export class HUD {
     this.btnControls = this.btn('Controls', () => this.controlsEl.classList.toggle('on'));
     this.btnGfx = this.btn('Shadows: On', () => this.toggleShadows());
     this.btnMute = this.btn('Sound: On', () => this.toggleMute());
+    this.btnNew = this.btn('New Game', () => this.newGame());
     this.controlsEl = el('vb-keys', keysHtml());
-    this.pauseEl.append(this.btnResume, this.btnControls, this.btnGfx, this.btnMute, this.controlsEl);
+    this.volsEl = el('vb-vols');
+    for (const [ch, label] of VOLUMES) {
+      const row = el('vb-vol', `<span>${label}</span>`);
+      const inp = el('clickable', '', 'input'); inp.type = 'range'; inp.min = 0; inp.max = 100; inp.step = 1;
+      inp.value = Math.round(this.volumes[ch] * 100);
+      inp.addEventListener('input', () => this.setVolume(ch, inp.value / 100));
+      inp.addEventListener('mousedown', e => e.stopPropagation());
+      row.appendChild(inp); this.volsEl.appendChild(row);
+      this.game.audio?.setVolume?.(ch, this.volumes[ch]);
+    }
+    this.pauseEl.append(this.btnResume, this.btnControls, this.btnGfx, this.btnMute, this.volsEl, this.btnNew, this.controlsEl);
 
-    root.append(tr, mw, this.speedEl, this.districtEl, this.missionEl, this.msgsEl, this.bigEl, this.titleEl, this.pauseEl);
+    root.append(tr, mw, this.speedEl, this.districtEl, this.missionEl, this.msgsEl, this.bigEl, this.crossEl, this.hitEl, this.titleEl, this.pauseEl);
   }
 
   btn(label, fn) {
@@ -88,6 +112,13 @@ export class HUD {
     ev.on('hud:bigtext', m => m && this.bigText(m.text, m.color, m.duration));
     ev.on('money:changed', () => this.onMoney());
     ev.on('wanted:changed', () => this.flashStars());
+    ev.on('ped:damaged', e => {
+      if (!e || e.source !== 'player') return;
+      const dead = e.ped && (e.ped.alive === false || e.ped.state === 'dead' || e.ped.health <= 0);
+      this.hitT = dead ? 0.35 : 0.2;
+      this.hitEl.classList.toggle('kill', !!dead);
+      this.hitEl.classList.remove('show'); void this.hitEl.offsetWidth; this.hitEl.classList.add('show');
+    });
 
     const dismiss = () => this.hideTitle();
     addEventListener('keydown', e => {
@@ -122,6 +153,7 @@ export class HUD {
       try { g.renderer.domElement.requestPointerLock?.(); } catch (e) { /* needs a gesture */ }
     } else {
       this.btnMute.textContent = 'Sound: ' + (this.muted ? 'Off' : 'On');
+      this.btnNew.textContent = 'New Game';
       try { document.exitPointerLock?.(); } catch (e) { /* ignore */ }
     }
   }
@@ -139,12 +171,31 @@ export class HUD {
     this.btnMute.textContent = 'Sound: ' + (this.muted ? 'Off' : 'On');
   }
 
+  setVolume(ch, v) {
+    this.volumes[ch] = v;
+    this.game.audio?.setVolume?.(ch, v);
+    try { localStorage.setItem(VOL_KEY, JSON.stringify(this.volumes)); } catch (e) { /* ignore */ }
+  }
+
+  // two clicks: first arms the button, second wipes the save and reloads
+  newGame() {
+    if (!this.btnNew.classList.contains('armed')) {
+      this.btnNew.classList.add('armed'); this.btnNew.textContent = 'Really? Click again';
+      setTimeout(() => { this.btnNew.classList.remove('armed'); this.btnNew.textContent = 'New Game'; }, 3000);
+      return;
+    }
+    if (this.game.save?.newGame) this.game.save.newGame();
+    else { try { localStorage.removeItem('gta7.missions.completed'); } catch (e) { /* ignore */ } location.reload(); }
+  }
+
   message(text, duration = 3.5) {
     if (!text) return;
+    // the current objective lives in the top bar only
+    if (text === this.game.missions?.active?.objectiveText) return;
     const m = el('vb-msg'); m.textContent = text;
     this.msgsEl.appendChild(m);
     this.msgs.push({ el: m, t: duration });
-    while (this.msgs.length > 4) this.msgs.shift().el.remove();
+    while (this.msgs.length > 3) this.msgs.shift().el.remove();
   }
 
   bigText(text, color = '#fff', duration = 3) {
@@ -200,10 +251,15 @@ export class HUD {
 
     // weapon
     const wp = p?.weapon;
-    if (wp) this.set('weapon', `${wp.name}|${wp.ammo}|${wp.id}`, () => {
+    if (wp) this.set('weapon', `${wp.name}|${wp.ammo}|${wp.id}|${wp.clip}|${wp.reloading}`, () => {
       const infinite = wp.id === 'fists' || wp.ammo == null || wp.ammo === Infinity;
-      this.weaponEl.innerHTML = `${wp.name || 'Fists'}${infinite ? '' : `<i>${wp.ammo}</i>`}`;
+      const hasClip = Number.isFinite(wp.clip);
+      let info = '';
+      if (!infinite) info = `<i>${hasClip ? `${wp.clip} / ${wp.ammo}` : wp.ammo}</i>`;
+      if (wp.reloading) info += '<i class="rl">RELOADING</i>';
+      this.weaponEl.innerHTML = `${wp.name || 'Fists'}${info}`;
     });
+    this.updateCrosshair(dt, p, wp);
 
     // bars
     if (p) {
@@ -263,6 +319,20 @@ export class HUD {
     }
 
     this.map.draw(this.time);
+  }
+
+  updateCrosshair(dt, p, wp) {
+    const g = this.game;
+    const show = !g.paused && !this.titleVisible && !!p && p.alive !== false && !p.vehicle && !!wp && wp.id !== 'fists';
+    this.set('cross', show, v => this.crossEl.classList.toggle('on', v));
+    if (this.hitT > 0) { this.hitT -= dt; if (this.hitT <= 0) this.hitEl.classList.remove('show'); }
+    if (!show) return;
+    const info = p.getAimInfo?.();
+    const aiming = info ? !!info.aiming : !!g.input.mouse.right;
+    const spread = info?.spread ?? WEAPON_SPREAD[wp.id] ?? 0.02;
+    const gap = Math.round((4 + spread * 240) * (aiming ? 0.6 : 1));
+    this.set('gap', gap, v => this.crossEl.style.setProperty('--gap', v + 'px'));
+    this.set('aim', aiming, v => this.crossEl.classList.toggle('aim', v));
   }
 
   showDistrict(name) {

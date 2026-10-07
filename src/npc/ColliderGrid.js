@@ -1,5 +1,22 @@
 // Uniform grid over the static AABB colliders so per-ped / per-cop queries stay cheap.
-import { rayBox } from '../core/physics.js';
+
+// Allocation-free ray vs AABB in XZ (core/physics rayBox builds temporary arrays per call).
+function rayBox(ox, oz, dx, dz, b) {
+  let tmin = -Infinity, tmax = Infinity;
+  if (Math.abs(dx) < 1e-9) { if (ox < b.minX || ox > b.maxX) return Infinity; }
+  else {
+    let t1 = (b.minX - ox) / dx, t2 = (b.maxX - ox) / dx;
+    if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
+    if (t1 > tmin) tmin = t1; if (t2 < tmax) tmax = t2;
+  }
+  if (Math.abs(dz) < 1e-9) { if (oz < b.minZ || oz > b.maxZ) return Infinity; }
+  else {
+    let t1 = (b.minZ - oz) / dz, t2 = (b.maxZ - oz) / dz;
+    if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
+    if (t1 > tmin) tmin = t1; if (t2 < tmax) tmax = t2;
+  }
+  return tmax >= Math.max(tmin, 0) ? Math.max(tmin, 0) : Infinity;
+}
 
 const CELL = 24;
 

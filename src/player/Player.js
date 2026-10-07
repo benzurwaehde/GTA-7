@@ -5,6 +5,7 @@ import { Character } from './Character.js';
 import { Weapons } from './Weapons.js';
 import { CameraRig, lerpAngle } from './CameraRig.js';
 
+const AIM_SLOW = 0.55, STRIDE = 2.3; // aim-mode speed factor; metres per footstep (matches the walk-cycle phase)
 const WALK = 4.4, RUN = 8.2, GRAVITY = 24, JUMP_V = 8, ENTER_RANGE = 4;
 // Sign convention for vehicle.setControls({steer}): +1 = steer RIGHT (D key), see ARCHITECTURE.md.
 const STEER_LEFT = -1;
@@ -23,6 +24,7 @@ export class Player {
     this.stateT = 0;
     this.spawned = false;
     this.lastHorn = 0;
+    this.aimK = 0; this.stepDist = 0; this.hspeed = 0;
 
     this.character = new Character();
     this.mesh = this.character.root;
@@ -34,9 +36,11 @@ export class Player {
     this.near = []; this.nearAt = new THREE.Vector3(1e9, 0, 1e9); this.nearCount = -1;
 
     game.events.on('player:busted', () => this.busted());
+    game.events.on('player:damaged', e => { if (e?.source === 'explosion') this.cam.shake(0.7); else this.cam.shake(0.15); });
     game.events.on('vehicle:crash', e => {
       if (!this.alive || !this.vehicle || e?.vehicle !== this.vehicle) return;
       const imp = Math.abs(e.impact || 0);
+      if (imp > 4) this.cam.shake(Math.min(0.9, imp / 22));
       if (imp > 9) this.damage(Math.min(45, (imp - 9) * 1.8), 'crash');
     });
     game.events.on('vehicle:destroyed', e => {
@@ -58,6 +62,11 @@ export class Player {
   heal(n) { if (this.alive) this.health = Math.min(100, this.health + n); }
   addArmor(n) { this.armor = Math.min(100, this.armor + n); }
   addAmmo(id, n) { this.weapons.addAmmo(id, n); }
+  // Crosshair info for the HUD: aim mode on, current weapon and spread (radians).
+  getAimInfo() {
+    const gun = !this.vehicle && this.alive && !this.weapons.def.melee;
+    return { aiming: gun && this.aimK > 0.5, weaponId: this.weapons.def.id, spread: this.weapons.spread(gun && this.aimK > 0.5) };
+  }
   teleport(x, z) { this.position.set(x, 0, z); this.vy = 0; this.vel.set(0, 0, 0); }
 
   // ---------- life cycle ----------
@@ -147,12 +156,33 @@ export class Player {
     this.near = cols.filter(b => p.x > b.minX - range && p.x < b.maxX + range && p.z > b.minZ - range && p.z < b.maxZ + range);
   }
 
-  walk(dt) {
+  // Push the player out of every car (capsule along the car's length). Parked cars included.
+  collideVehicles() {
+    const list = this.game.vehicles?.list; if (!list) return;
+    const pos = this.position, r = this.radius;
+    for (let i = 0; i < list.length; i++) {
+      const v = list[i];
+      if (!v || !v.position || v === this.vehicle || v.driver === 'player') continue;
+      const vx = v.position.x, vz = v.position.z, reach = (v.radius || 2) + 2.5 + r;
+      if (Math.abs(pos.x - vx) > reach || Math.abs(pos.z - vz) > reach) continue;
+      const cr = v.cr || 0.9, off = v.coff ?? 0.9, h = v.heading || 0, fx = Math.sin(h), fz = Math.cos(h);
+      // capsule: closest point on the car's centre line (-off..+off), radius cr
+      const t = Math.max(-off, Math.min(off, (pos.x - vx) * fx + (pos.z - vz) * fz));
+      const cx = vx + fx * t, cz = vz + fz * t;
+      const dx = pos.x - cx, dz = pos.z - cz, rr = cr + r, d2 = dx * dx + dz * dz;
+      if (d2 >= rr * rr) continue;
+      const d = Math.sqrt(d2);
+      if (d > 1e-5) { pos.x += dx / d * (rr - d); pos.z += dz / d * (rr - d); }
+      else { pos.x += -fz * rr; pos.z += fx * rr; } // exactly on the centre line: push sideways
+    }
+  }
+
+  walk(dt, aiming = false) {
     const g = this.game, inp = g.input, cam = this.cam;
     let ix = (inp.isDown('KeyD') ? 1 : 0) - (inp.isDown('KeyA') ? 1 : 0);
     let iz = (inp.isDown('KeyW') ? 1 : 0) - (inp.isDown('KeyS') ? 1 : 0);
     const len = Math.hypot(ix, iz);
-    const sprint = inp.isDown('ShiftLeft') || inp.isDown('ShiftRight');
+    const sprint = !aiming && (inp.isDown('ShiftLeft') || inp.isDown('ShiftRight'));
     const sy = Math.sin(cam.yaw), cy = Math.cos(cam.yaw);
     let wx = 0, wz = 0;
     if (len > 0) {
@@ -160,7 +190,7 @@ export class Player {
       // forward = (sin, cos); right = (-cos, sin)
       wx = sy * iz - cy * ix; wz = cy * iz + sy * ix;
     }
-    const speed = len > 0 ? (sprint ? RUN : WALK) : 0;
+    const speed = len > 0 ? (sprint ? RUN : WALK) * (aiming ? AIM_SLOW : 1) : 0;
     const k = 1 - Math.exp(-dt * (this.grounded ? 14 : 3));
     this.vel.x += (wx * speed - this.vel.x) * k;
     this.vel.z += (wz * speed - this.vel.z) * k;
@@ -173,6 +203,7 @@ export class Player {
     this.position.x += this.vel.x * dt; this.position.z += this.vel.z * dt;
     this.refreshNear();
     if (this.near.length) resolveCircleVsBoxes(this.position, this.radius, this.near);
+    if (this.position.y < 1.2) { this.collideVehicles(); if (this.near.length) resolveCircleVsBoxes(this.position, this.radius, this.near); }
     const lim = CITY.half - 1;
     this.position.x = Math.max(-lim, Math.min(lim, this.position.x));
     this.position.z = Math.max(-lim, Math.min(lim, this.position.z));
@@ -180,6 +211,11 @@ export class Player {
     // facing
     const hs = Math.hypot(this.vel.x, this.vel.z);
     this.hspeed = hs;
+    // footsteps: one per stride while moving on the ground
+    if (this.grounded && hs > 0.8) {
+      this.stepDist += hs * dt;
+      if (this.stepDist >= STRIDE) { this.stepDist -= STRIDE; g.audio?.play?.('footstep', { x: this.position.x, z: this.position.z }); }
+    } else if (hs <= 0.8) this.stepDist = STRIDE * 0.5;
     return { moving: len > 0, hs };
   }
 
@@ -210,6 +246,9 @@ export class Player {
       if (inp.pressed('Digit1')) this.weapons.select(0);
       if (inp.pressed('Digit2')) this.weapons.select(1);
       if (inp.pressed('Digit3')) this.weapons.select(2);
+      const wh = inp.mouse.wheel;
+      if (wh) this.weapons.cycle(wh > 0 ? 1 : -1);
+      if (inp.pressed('KeyR')) this.weapons.startReload();
     }
     if (inp.pressed('KeyF')) { if (this.vehicle) this.exitVehicle(); else this.tryEnterVehicle(); }
 
@@ -218,28 +257,31 @@ export class Player {
       else {
         this.drive(dt);
         this.weapons.update(dt, false, false, this.cam.yaw);
+        this.aimK = 0;
         this.cam.update(dt, this.position, { vehicle: this.vehicle, colliders: this.near });
         return;
       }
     }
 
-    const mv = this.walk(dt);
     const m = inp.mouse;
+    const gunOut = !this.weapons.def.melee;
+    const aiming = gunOut && m.right;
+    this.aimK += ((aiming ? 1 : 0) - this.aimK) * (1 - Math.exp(-dt * 12));
+    const mv = this.walk(dt, aiming);
     const fireHeld = (m.locked && m.left) || inp.isDown('ControlLeft') || inp.isDown('ControlRight');
     const firePressed = (m.locked && m.leftPressed) || inp.pressed('ControlLeft') || inp.pressed('ControlRight');
     const fired = this.weapons.update(dt, fireHeld, firePressed, this.cam.yaw);
-    const gunOut = !this.weapons.def.melee;
     if (fired && gunOut) this.aimT = 1.6;
     if (fired && !gunOut) this.aimT = 0.4;
     this.aimT = Math.max(0, (this.aimT || 0) - dt);
 
     // heading: face aim direction while shooting/punching, otherwise movement direction
-    if (this.aimT > 0) this.heading = lerpAngle(this.heading, this.cam.yaw, 1 - Math.exp(-dt * 18));
+    if (this.aimT > 0 || aiming) this.heading = lerpAngle(this.heading, this.cam.yaw, 1 - Math.exp(-dt * 18));
     else if (mv.hs > 0.5) this.heading = lerpAngle(this.heading, Math.atan2(this.vel.x, this.vel.z), 1 - Math.exp(-dt * 12));
 
     this.mesh.position.copy(this.position);
     this.mesh.rotation.y = this.heading;
-    this.character.update(dt, { speed: mv.hs, grounded: this.grounded, aiming: gunOut && this.aimT > 0, vy: this.vy });
-    this.cam.update(dt, this.position, { colliders: this.near });
+    this.character.update(dt, { speed: mv.hs, grounded: this.grounded, aiming: gunOut && (this.aimT > 0 || aiming), vy: this.vy, reload: this.weapons.reloadProgress });
+    this.cam.update(dt, this.position, { colliders: this.near, aim: this.aimK });
   }
 }

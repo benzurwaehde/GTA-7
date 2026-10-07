@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { resolveCircleVsBoxes, rayBox } from '../core/physics.js';
 import { ColliderGrid } from './ColliderGrid.js';
-import { buildPedMesh, billGeo, billMat } from './PedModel.js';
+import { buildPedMesh, releasePedMesh, billGeo, billMat } from './PedModel.js';
 import { neighbors, nodePos, nodeKey, nearestNode, randomNodeAround } from './sidewalk.js';
 import { inView, playerPos, wrapAngle } from './view.js';
 
@@ -10,6 +10,9 @@ const TARGET = 40;
 const RECYCLE = 125;
 const SPAWN_MIN = 30, SPAWN_MAX = 112;
 const BODY_TIME = 25;
+const FIGHT_CHANCE = 0.15;   // share of civilians that hit back
+const CAR_CLEAR = 15;        // fallback: no moving car within this distance of the crossing
+const _mid = { x: 0, z: 0 };
 
 export class Pedestrians {
   constructor(game) {
@@ -44,6 +47,7 @@ export class Pedestrians {
       from: null, to: null, tx: x, tz: z, jx: 0, jz: 0, fleeT: 0, fleeX: 0, fleeZ: 0,
       stuckT: 0, lx: x, lz: z, deadT: 0, vel: new THREE.Vector3(), fall: 0, fallDir: Math.random() < 0.5 ? 1 : -1,
       external: false, cmd: { vx: 0, vz: 0 }, aim: null,
+      fighter: kind !== 'cop' && Math.random() < FIGHT_CHANCE, fightT: 0, punchCd: 0, punchAnim: 0, waiting: null, waitT: 0,
     };
     mesh.rotation.y = ped.heading;
     this.group.add(mesh);
@@ -61,6 +65,7 @@ export class Pedestrians {
     const i = this.list.indexOf(ped);
     if (i >= 0) this.list.splice(i, 1);
     this.group.remove(ped.mesh);
+    releasePedMesh(ped.mesh);
   }
 
   _spawnCivilian(first) {
@@ -96,6 +101,8 @@ export class Pedestrians {
       if (!p.alive || p.isCop) continue;
       const dx = p.position.x - x, dz = p.position.z - z;
       if (dx * dx + dz * dz > radius * radius) continue;
+      if (p.state === 'fight') continue;
+      p.waiting = null;
       p.state = 'flee'; p.fleeX = x; p.fleeZ = z;
       p.fleeT = 5 + Math.random() * 6;
     }
@@ -149,10 +156,21 @@ export class Pedestrians {
     }
     if (!ped.isCop) {
       const pp = playerPos(this.game);
+      if (ped.fighter && source === 'player' && this._canFight(ped)) {
+        ped.state = 'fight'; ped.fightT = 14; ped.waiting = null; ped.punchCd = 0.5;
+        return false;
+      }
+      ped.waiting = null;
       ped.state = 'flee'; ped.fleeT = 8;
       ped.fleeX = source === 'player' ? pp.x : ped.position.x - 1; ped.fleeZ = source === 'player' ? pp.z : ped.position.z;
     }
     return false;
+  }
+
+  // Fighters only brawl with an unarmed player on foot.
+  _canFight(ped) {
+    const pl = this.game.player;
+    return !!pl && !pl.vehicle && pl.alive !== false && (!pl.weapon?.id || pl.weapon.id === 'fists');
   }
 
   kill(ped, source, vx = 0, vy = 3, vz = 0) {
@@ -201,6 +219,7 @@ export class Pedestrians {
       if (p.state === 'dead') { this._updateDead(p, dt); if (p.deadT > BODY_TIME) this.removePed(p); continue; }
       if (p.external) this._moveExternal(p, dt);
       else if (p.state === 'flee') this._moveFlee(p, dt);
+      else if (p.state === 'fight') this._moveFight(p, dt, pp);
       else this._moveWalk(p, dt);
       this._animate(p, dt);
       // run over
@@ -231,6 +250,11 @@ export class Pedestrians {
     const dx = tx - p.position.x, dz = tz - p.position.z;
     const d = Math.hypot(dx, dz);
     p.curSpeed = p.speed;
+    if (p.waiting) {
+      p.curSpeed = 0; p.waitT += dt; p.stuckT = 0; p.lx = p.position.x; p.lz = p.position.z;
+      if (this._crossingClear(p, tx, tz)) p.waiting = null;
+      return;
+    }
     if (d < 1.0) { this._pickNext(p); }
     else {
       const sp = p.speed;
@@ -251,6 +275,56 @@ export class Pedestrians {
     let r = Math.random() * tot, pick = cand[0];
     for (const o of cand) { r -= o.cross ? 0.5 : 1; if (r <= 0) { pick = o; break; } }
     p.from = p.to; p.to = pick.node; this._jitter(p);
+    // crossing a road at a corner: wait for the light (or a gap in traffic)
+    p.waiting = pick.cross ? (pick.node.ix === p.from.ix && pick.node.sx !== p.from.sx ? 'ns' : 'ew') : null;
+    p.waitT = 0;
+  }
+
+  // Traffic on axis 'ns' runs along Z (peds cross it walking along X), 'ew' along X.
+  _crossingClear(p, tx, tz) {
+    const g = this.game;
+    _mid.x = (p.position.x + tx) / 2; _mid.z = (p.position.z + tz) / 2;
+    const sig = g.world?.signalAt?.(_mid.x, _mid.z, p.waiting);
+    const list = g.vehicles?.list;
+    if (sig === 'red') {
+      // the last cars may still be clearing the junction
+      if (list) for (const v of list) {
+        if (v.destroyed || !v.position || Math.abs(v.speed) < 3) continue;
+        if (Math.hypot(v.position.x - _mid.x, v.position.z - _mid.z) < 6) return false;
+      }
+      return true;
+    }
+    if (sig === 'green' || sig === 'yellow') return false;
+    // no signal available: wait until no moving car is within CAR_CLEAR of the crossing
+    if (list) for (const v of list) {
+      if (v.destroyed || !v.position || Math.abs(v.speed) < 1) continue;
+      if (Math.hypot(v.position.x - _mid.x, v.position.z - _mid.z) < CAR_CLEAR) return false;
+    }
+    return true;
+  }
+
+  _moveFight(p, dt, pp) {
+    const g = this.game;
+    p.fightT -= dt; p.punchCd -= dt;
+    if (p.fightT <= 0 || !this._canFight(p)) { this._beginFlee(p, pp); return; }
+    const dx = pp.x - p.position.x, dz = pp.z - p.position.z, d = Math.hypot(dx, dz) || 1;
+    if (d > 28) { this._calm(p); return; }
+    p.curSpeed = 0;
+    this._face(p, dx, dz);
+    if (d > 1.15) {
+      const sp = 3.6;
+      p.position.x += dx / d * sp * dt; p.position.z += dz / d * sp * dt;
+      p.curSpeed = sp;
+    } else if (p.punchCd <= 0) {
+      p.punchCd = 1.0 + Math.random() * 0.4; p.punchAnim = 1;
+      g.audio?.play?.('punch', { x: p.position.x, z: p.position.z });
+      g.player?.damage?.(5 + Math.floor(Math.random() * 4), 'ped');
+    }
+    this._collide(p);
+  }
+
+  _beginFlee(p, pp) {
+    p.state = 'flee'; p.fleeT = 6; p.fleeX = pp.x; p.fleeZ = pp.z;
   }
 
   _stuck(p, dt) {
@@ -285,7 +359,7 @@ export class Pedestrians {
   }
 
   _calm(p) {
-    p.state = 'walk';
+    p.state = 'walk'; p.waiting = null;
     p.to = nearestNode(p.position.x, p.position.z); p.from = null; this._jitter(p);
   }
 
@@ -306,6 +380,14 @@ export class Pedestrians {
     const u = p.mesh.userData;
     u.legL.rotation.x = Math.sin(p.phase) * amp;
     u.legR.rotation.x = -Math.sin(p.phase) * amp;
+    // arms swing against the legs; running pumps them harder, a punch overrides the right arm
+    const aamp = amp * (p.state === 'flee' ? 1.15 : 0.8);
+    u.armL.rotation.x = -Math.sin(p.phase) * aamp;
+    u.armR.rotation.x = Math.sin(p.phase) * aamp;
+    if (p.punchAnim > 0) {
+      p.punchAnim = Math.max(0, p.punchAnim - dt * 3.5);
+      u.armR.rotation.x = -Math.sin((1 - p.punchAnim) * Math.PI) * 1.9;
+    }
     u.torso.rotation.z = Math.sin(p.phase) * 0.04 * Math.min(1, sp);
     p.mesh.rotation.y = p.heading;
     p.curSpeed *= 0.0; // re-set each frame by the movers
@@ -328,7 +410,7 @@ export class Pedestrians {
     p.mesh.rotation.x = -p.fall * (Math.PI / 2) * p.fallDir;
     p.mesh.rotation.y = p.heading;
     const u = p.mesh.userData;
-    u.legL.rotation.x *= 0.9; u.legR.rotation.x *= 0.9;
+    u.legL.rotation.x *= 0.9; u.legR.rotation.x *= 0.9; u.armL.rotation.x *= 0.9; u.armR.rotation.x *= 0.9;
     if (p.deadT > BODY_TIME - 2) pos.y -= dt * 0.12;
   }
 

@@ -96,6 +96,15 @@ export class Minimap {
         else { ctx.fillStyle = 'rgba(210,205,240,.75)'; ctx.fillRect(x - 2, y - 2, 4, 4); }
       }
     }
+    // pickups (small colored diamonds)
+    const pk = game.pickups?.items;
+    if (pk) for (let i = 0; i < pk.length; i++) {
+      const it = pk[i];
+      if (!it.active || !inside(it.x, it.z, 4)) continue;
+      const x = sx(it.x, it.z), y = sy(it.x, it.z);
+      ctx.beginPath(); ctx.moveTo(x, y - 4.5); ctx.lineTo(x + 4.5, y); ctx.lineTo(x, y + 4.5); ctx.lineTo(x - 4.5, y); ctx.closePath();
+      ctx.fillStyle = it.color; ctx.fill(); ctx.lineWidth = 1; ctx.strokeStyle = '#0b0618'; ctx.stroke();
+    }
     ctx.restore();
 
     // mission blips + objective (clamped to the rim so they always guide you)
