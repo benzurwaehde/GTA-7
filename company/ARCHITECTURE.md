@@ -16,7 +16,8 @@ Each system is a class `constructor(game)` with `update(dt)`. Update order = reg
 - `core/config.js`: `CITY`, `ROAD_LINES`, `blockBounds(i,j)`, `isOnRoad(x,z)`, `nearestRoadLine(v)`.
   City is a grid of `CITY.blocks²` blocks; roads (width `CITY.roadWidth`) run along every `ROAD_LINES` value on both axes. Two lanes: right-hand traffic.
 - `core/physics.js`: `resolveCircleVsBoxes(pos, r, boxes)`, `circlesOverlap(...)`, `rayBox(ox,oz,dx,dz,box)`. Boxes are `{minX,maxX,minZ,maxZ}` (optionally `maxY`).
-- `game.input`: `isDown(code)`, `pressed(code)` (one frame), `mouse.{dx,dy,left,leftPressed,locked}`. Codes are `KeyboardEvent.code` (`'KeyW'`, `'Space'`, `'ShiftLeft'`...).
+- `game.input`: `isDown(code)`, `pressed(code)` (one frame), `setVirtual(code, on)` (touch controls), `mouse.{dx,dy,left,leftPressed,right,rightPressed,wheel,locked}`. Codes are `KeyboardEvent.code` (`'KeyW'`, `'Space'`, `'ShiftLeft'`...).
+- `core/traffic.js`: `signalState(game.time, i, j, axis) -> 'green'|'yellow'|'red'` for intersection (i,j) at `(ROAD_LINES[i], ROAD_LINES[j])`; axis `'x'` = traffic moving along x, `'z'` = along z. World draws the lights, vehicles stop on red/yellow, peds cross on red for cars.
 - `game.events`: `on(name, fn)` / `emit(name, payload)`.
 - `game.state`: `{ money, wanted }` — shared numbers shown by the HUD.
 - `game.time`, `game.paused`, `game.scene`, `game.camera`, `game.renderer`, `game.ui` (DOM overlay root, `pointer-events:none`; add class `clickable` to interactive elements).
