@@ -24,6 +24,8 @@ export class Game {
     this.clock = new THREE.Clock();
     this.time = 0;          // seconds since start (game time, pauses when paused)
     this.paused = false;
+    this.timeScale = 1;     // game speed (e.g. 0.25 = slow motion while a weapon wheel is open)
+    this.realDt = 0;        // unscaled frame time, for UI that must not slow down
     this.systems = [];      // [{ name, system }]
     this.state = { money: 0, wanted: 0 };
 
@@ -50,6 +52,8 @@ export class Game {
   }
 
   step(dt) {
+    this.realDt = dt;
+    dt *= this.timeScale;
     if (!this.paused) {
       this.time += dt;
       for (const { name, system } of this.systems) {

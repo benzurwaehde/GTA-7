@@ -4,3 +4,5 @@ tests/screenshots/
 .claude/settings.local.json
 __pycache__/
 unternehmen/**/*.png
+release/
+build/icon.iconset/

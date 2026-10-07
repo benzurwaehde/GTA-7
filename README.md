@@ -12,6 +12,20 @@ npm run smoke      # Headless-Smoke-Test (schlägt bei jedem Konsolenfehler fehl
 node tests/qa-tour.mjs   # Screenshot-Tour typischer Szenen -> tests/screenshots/qa-*.png
 ```
 
+## Als Mac-App
+
+Das Spiel steckt in einer Electron-App (`electron/main.cjs`). Sie liefert den Vite-Build über `app://` aus.
+
+```bash
+npm run app           # Build bauen und direkt im App-Fenster starten (ohne Installation)
+npm run dist:mac      # Mac-App bauen -> release/mac-arm64/GTA 7 Vice Bay.app
+npm run app:install   # bauen und nach /Applications installieren
+npm run app:test      # gepackte App starten und automatisch prüfen
+npm run icon          # App-Icon neu erzeugen (build/icon.icns)
+```
+
+Nach einer Änderung am Spiel genügt `npm run app:install`, dann ist die installierte App aktuell. Die App ist nicht signiert. Da sie lokal gebaut wird, öffnet macOS sie trotzdem ohne Rückfrage. Vollbild gibt es über das Menü „Ansicht“ oder mit ⌃⌘F.
+
 Schwere Tests (Smoke, QA-Tour, Blender) laufen bei parallelem Arbeiten über `tools/heavy.sh <befehl>`. Das Skript lässt höchstens zwei gleichzeitig zu (`HEAVY_SLOTS`), damit der Laptop nicht überhitzt.
 
 Die Blender-Modelle baust du neu mit `blender -b --factory-startup --python tools/blender/car_sedan.py`. Die Exporte landen in `public/models/`.

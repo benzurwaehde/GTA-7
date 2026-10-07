@@ -1,31 +1,59 @@
 {
   "name": "gta-7",
   "version": "1.0.0",
-  "description": "",
+  "description": "GTA 7: Vice Bay – browser open-world game, packaged as a macOS app",
   "scripts": {
     "dev": "vite --host",
     "build": "vite build",
     "preview": "vite preview",
-    "smoke": "node tests/smoke.mjs"
+    "smoke": "node tests/smoke.mjs",
+    "app": "vite build && electron .",
+    "icon": "node tools/make-icon.mjs",
+    "dist:mac": "vite build && electron-builder --mac dir",
+    "app:test": "env -u ELECTRON_RUN_AS_NODE node tests/app-smoke.mjs",
+    "app:install": "npm run dist:mac && rm -rf \"/Applications/GTA 7 Vice Bay.app\" && ditto \"release/mac-arm64/GTA 7 Vice Bay.app\" \"/Applications/GTA 7 Vice Bay.app\""
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/benzurwaehde/GTA-7.git"
   },
   "keywords": [],
-  "author": "",
+  "author": "benzurwaehde",
   "license": "ISC",
   "bugs": {
     "url": "https://github.com/benzurwaehde/GTA-7/issues"
   },
   "homepage": "https://github.com/benzurwaehde/GTA-7#readme",
-  "dependencies": {
+  "devDependencies": {
+    "electron": "^44.6.0",
+    "electron-builder": "^26.15.3",
+    "playwright": "^1.56.1",
+    "vite": "^8.3.3",
     "three": "^0.186.1"
   },
-  "devDependencies": {
-    "playwright": "^1.56.1",
-    "vite": "^8.3.3"
-  },
   "private": true,
-  "type": "module"
+  "type": "module",
+  "productName": "GTA 7 Vice Bay",
+  "main": "electron/main.cjs",
+  "build": {
+    "appId": "com.benzurwaehde.gta7vicebay",
+    "productName": "GTA 7 Vice Bay",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.action-games",
+      "icon": "build/icon.icns",
+      "target": [
+        "dir"
+      ],
+      "identity": null
+    }
+  }
 }
