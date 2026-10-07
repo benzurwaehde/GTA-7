@@ -6,8 +6,8 @@ import { Weapons } from './Weapons.js';
 import { CameraRig, lerpAngle } from './CameraRig.js';
 
 const WALK = 4.4, RUN = 8.2, GRAVITY = 24, JUMP_V = 8, ENTER_RANGE = 4;
-// Sign convention sent to vehicle.setControls({steer}): +1 = steer LEFT (A key). See company/requests/player.md.
-const STEER_LEFT = 1;
+// Sign convention for vehicle.setControls({steer}): +1 = steer RIGHT (D key), see ARCHITECTURE.md.
+const STEER_LEFT = -1;
 
 export class Player {
   constructor(game) {

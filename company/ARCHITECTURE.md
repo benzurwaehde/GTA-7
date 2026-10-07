@@ -36,7 +36,7 @@ Each system is a class `constructor(game)` with `update(dt)`. Update order = reg
 - `damage(vehicle, amount)`; at health ≤ 0 → explodes, `destroyed=true`, emits `vehicle:destroyed {vehicle}`.
 - Vehicle fields: `mesh`, `position` (=== mesh.position), `heading` (yaw rad; forward = `(sin h, 0, cos h)`), `speed` (m/s, signed),
   `radius`, `type`, `driver` (`null|'player'|'npc'|'police'`), `health` (0–100), `destroyed`, `isPolice`, `sirenOn`.
-- `vehicle.setControls({ throttle, steer, brake, handbrake })` (throttle/steer in −1..1). The manager drives `'npc'` (traffic) itself;
+- `vehicle.setControls({ throttle, steer, brake, handbrake })` (throttle/steer in −1..1; **steer +1 = turn right**, −1 = left). The manager drives `'npc'` (traffic) itself;
   `'player'` cars are controlled by the Player via `setControls` every frame; `'police'` cars by the Police system via `setControls`.
 - Emits `vehicle:crash {vehicle, impact}`, `vehicle:hijacked {vehicle}` (when player enters an npc-driven car).
 - Keeps ~25 traffic cars alive around the player; parked cars along curbs.
