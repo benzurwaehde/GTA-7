@@ -1,0 +1,31 @@
+{
+  "name": "gta-7",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "vite build",
+    "preview": "vite preview",
+    "smoke": "node tests/smoke.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/benzurwaehde/GTA-7.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/benzurwaehde/GTA-7/issues"
+  },
+  "homepage": "https://github.com/benzurwaehde/GTA-7#readme",
+  "dependencies": {
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "playwright": "^1.56.1",
+    "vite": "^8.3.3"
+  },
+  "private": true,
+  "type": "module"
+}
