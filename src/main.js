@@ -7,6 +7,10 @@ import { Police } from './police/Police.js';
 import { Missions } from './missions/Missions.js';
 import { HUD } from './ui/HUD.js';
 import { AudioSystem } from './audio/AudioSystem.js';
+import { preloadModels } from './core/assets.js';
+import { MODEL_LIST } from './core/modelList.js';
+
+await preloadModels(MODEL_LIST);
 
 const game = new Game(document.getElementById('game'), document.getElementById('ui'));
 // Order matters: world first, camera-owning player after vehicles, HUD last.
