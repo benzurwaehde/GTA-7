@@ -7,6 +7,10 @@ import { driveNPC, initAI, pickLanePoint, pickCurbPoint } from './traffic.js';
 
 const TRAFFIC_TARGET = 25, PARKED_TARGET = 30;
 const _v3 = new THREE.Vector3();
+const _best = { ov: 0, nx: 0, nz: 0, ax: 0, az: 0, bx: 0, bz: 0, cax: 0, caz: 0, cbx: 0, cbz: 0 };   // scratch for carVsCar
+// Spawn mix for random cars (cumulative weights), traffic and parked cars. Parked cars have no buses.
+const MIX_TRAFFIC = [['sedan', 0.32], ['taxi', 0.44], ['sports', 0.52], ['muscle', 0.61], ['van', 0.72], ['bus', 0.77], ['bike', 0.85], ['truck', 1]];
+const MIX_PARKED = [['sedan', 0.38], ['taxi', 0.46], ['sports', 0.56], ['muscle', 0.66], ['van', 0.80], ['bike', 0.90], ['truck', 1]];
 
 export class VehicleManager {
   constructor(game) {
@@ -24,6 +28,7 @@ export class VehicleManager {
     this.headSpot.position.set(0, -50, 0);
     game.scene.add(this.headSpot, this.headSpot.target);
     this.nightF = 0;
+    this.sirens = [];    // police cars with siren on and moving, rebuilt every frame (traffic yields to these)
   }
 
   // ---------------- public API ----------------
@@ -41,6 +46,7 @@ export class VehicleManager {
     const i = this.list.indexOf(v);
     if (i >= 0) this.list.splice(i, 1);
     if (v?.mesh) this.game.scene.remove(v.mesh);
+    v?.disposeVisual?.();
   }
 
   getNearest(x, z, maxDist = Infinity, filterFn) {
@@ -102,6 +108,7 @@ export class VehicleManager {
     if (!v || v.destroyed || !(amount > 0)) return;
     v.health = Math.max(0, v.health - amount);
     v.sleeping = false;
+    if (v.health < 60) v.crackGlass();      // damage stages: <60 windows crack, <50 smoke (emitEffects), <15 fire, 0 wreck
     if (v.health <= 0) this.explode(v);
   }
 
@@ -113,11 +120,12 @@ export class VehicleManager {
     v.setControls({});
     v.blacken();
     const p = v.position;
-    this.effects.explosion(p.x, 0, p.z);
+    this.effects.explosion(p.x, 0, p.z, v.color);
     this.game.audio?.play?.('explosion', { x: p.x, z: p.z });
     this.game.events.emit('vehicle:destroyed', { vehicle: v });
     // blast: shove + hurt nearby
-    for (const o of this.list.slice()) {
+    for (let i = 0, n = this.list.length; i < n; i++) {
+      const o = this.list[i];
       if (o === v || o.destroyed) continue;
       const dx = o.position.x - p.x, dz = o.position.z - p.z, d = Math.hypot(dx, dz);
       if (d < 8) {
@@ -131,14 +139,17 @@ export class VehicleManager {
       const d = Math.hypot(pl.position.x - p.x, pl.position.z - p.z);
       if (d < 7) pl.damage?.(45 * (1 - d / 7), 'explosion');
     }
-    for (const ped of this.game.peds?.list || []) {
+    const peds = this.game.peds?.list;
+    if (peds) for (let i = 0; i < peds.length; i++) {
+      const ped = peds[i];
       if (!ped.position || ped.state === 'dead') continue;
       if (Math.hypot(ped.position.x - p.x, ped.position.z - p.z) < 7) this.game.peds.damage?.(ped, 100, 'explosion');
     }
   }
 
   // Called by physics on any collision. `other` is null for static geometry.
-  registerImpact(a, b, impact) {
+  // (pax, paz) / (pbx, pbz) are the world contact points on a / b (used for dents), optional.
+  registerImpact(a, b, impact, pax, paz, pbx, pbz) {
     if (impact < 3) return;
     const involved = d => d === 'player' || d === 'police';
     const hurt = involved(a.driver) || (b && involved(b.driver));
@@ -147,21 +158,40 @@ export class VehicleManager {
       this.damage(a, b ? base * 2 * b.mass / (a.mass + b.mass) : base);
       if (b) this.damage(b, base * 2 * a.mass / (a.mass + b.mass));
     }
-    const ev = this.game.events;
-    for (const [v, o] of [[a, b], [b, a]]) {
-      if (!v || v.crashCd > 0) continue;
-      v.crashCd = 0.25;
-      ev.emit('vehicle:crash', { vehicle: v, impact, other: o || null });
-      if (v === a) this.game.audio?.play?.('crash', { x: v.position.x, z: v.position.z, volume: Math.min(1, impact / 15) });
-      // an NPC car hit by the player / police: honk, and on a hard hit speed away for a few seconds
-      if (v.driver === 'npc' && o && (o.driver === 'player' || o.driver === 'police') && v.ai && impact > 3.5 && !v.destroyed) {
-        if (!(v.ai.hitHonkCd > 0)) {
-          v.ai.hitHonkCd = 3;
-          this.game.audio?.play?.('horn', { x: v.position.x, z: v.position.z });
-        }
-        if (impact > 8) v.ai.fleeT = 5;
-      }
+    // cosmetic dents on every hard knock, scaled by impact and by how much lighter the other party is
+    if (impact > 4 && pax !== undefined) {
+      a.dentAt(pax, paz, Math.min(0.32, (impact - 3.5) * 0.03 * (b ? 2 * b.mass / (a.mass + b.mass) : 1)));
+      if (b && pbx !== undefined) b.dentAt(pbx, pbz, Math.min(0.32, (impact - 3.5) * 0.03 * 2 * a.mass / (a.mass + b.mass)));
     }
+    if (impact > 11) { a.crackGlass(); b?.crackGlass(); }
+    this._impactFor(a, b, impact, true);
+    if (b) this._impactFor(b, a, impact, false);
+  }
+
+  _impactFor(v, o, impact, sound) {
+    if (v.crashCd > 0) return;
+    v.crashCd = 0.25;
+    this.game.events.emit('vehicle:crash', { vehicle: v, impact, other: o || null });
+    if (sound) this.game.audio?.play?.('crash', { x: v.position.x, z: v.position.z, volume: Math.min(1, impact / 15) });
+    // a motorcycle throws its rider on a hard hit
+    if (v.spec.lean && v.driver && v.fallT <= 0 && !v.destroyed && impact > 8) this.throwRider(v, impact);
+    // an NPC car hit by the player / police: honk, and on a hard hit speed away for a few seconds
+    if (v.driver === 'npc' && o && (o.driver === 'player' || o.driver === 'police') && v.ai && impact > 3.5 && !v.destroyed) {
+      if (!(v.ai.hitHonkCd > 0)) {
+        v.ai.hitHonkCd = 3;
+        this.game.audio?.play?.('horn', { x: v.position.x, z: v.position.z });
+      }
+      if (impact > 8) v.ai.fleeT = 5;
+    }
+  }
+
+  throwRider(v, impact) {
+    v.fallT = 4; v.fallSide = v.yawVel >= 0 ? 1 : -1;
+    if (v.driver === 'player') {
+      const pl = this.game.player;
+      pl?.exitVehicle?.(true);
+      pl?.damage?.(Math.min(45, impact * 2.2), 'crash');
+    } else { v.driver = null; v.ai = null; }
   }
 
   // ---------------- update ----------------
@@ -179,6 +209,8 @@ export class VehicleManager {
 
     const list = this.list;
     const boxes = g.world?.colliders;
+    this.sirens.length = 0;
+    for (let i = 0; i < list.length; i++) { const v = list[i]; if (v.sirenOn && !v.destroyed && v.driver && Math.abs(v.speed) > 4) this.sirens.push(v); }
     for (let i = 0; i < list.length; i++) {
       const v = list[i];
       if (v.crashCd > 0) v.crashCd -= dt;
@@ -210,7 +242,8 @@ export class VehicleManager {
     const pools = this.effects.pools;
     if (nf < 0.03) { if (pools.n) { pools.begin(); pools.end(); } return; }
     pools.begin();
-    for (const v of this.list) {
+    for (let i = 0; i < this.list.length; i++) {
+      const v = this.list[i];
       if (v.driver === null || v.destroyed) continue;
       const dx = v.position.x - px, dz = v.position.z - pz;
       if (dx * dx + dz * dz > 130 * 130) continue;
@@ -239,15 +272,16 @@ export class VehicleManager {
     v._skidD = 0;
     const dir = Math.atan2(v.vx, v.vz), dx = v.vx / sp, dz = v.vz / sp, zr = v.model.zr ?? -v.spec.wb / 2, tr = v.spec.W / 2 - 0.12;
     const bx = v.position.x + fx * zr - dx * d * 0.5, bz = v.position.z + fz * zr - dz * d * 0.5;
-    for (const s of [-1, 1]) this.effects.skid(bx + -fz * tr * s, bz + fx * tr * s, dir, d, 0.12);
+    this.effects.skid(bx + fz * tr, bz - fx * tr, dir, d, 0.12);     // left and right rear wheel
+    this.effects.skid(bx - fz * tr, bz + fx * tr, dir, d, 0.12);
   }
 
   emitEffects(v, dt) {
     if (!v.destroyed && v.driver !== null) this.emitSkid(v, dt);
     let rate = 0, fire = 0;
     if (v.destroyed) { if (v.burnT > 0) { v.burnT -= dt; rate = 7; fire = 9; } else if (v.burnT > -20) { v.burnT -= dt; rate = 2; } }
-    else if (v.health < 30) {
-      rate = 2 + (30 - v.health) * 0.25;
+    else if (v.health < 50) {          // bonnet smoke from 50, thicker below 30, fire below 15
+      rate = v.health >= 30 ? 0.8 + (50 - v.health) * 0.08 : 2 + (30 - v.health) * 0.25;
       if (v.health < 15) { fire = 4; this.damage(v, 2.5 * dt); }
     }
     if (!rate) return;
@@ -261,7 +295,7 @@ export class VehicleManager {
   }
 
   carVsCar() {
-    const L = this.list;
+    const L = this.list, B = _best;
     for (let i = 0; i < L.length; i++) {
       const a = L[i];
       for (let j = i + 1; j < L.length; j++) {
@@ -271,30 +305,36 @@ export class VehicleManager {
         const maxD = (a.spec.L + b.spec.L) / 2 + 0.3;
         if (ddx * ddx + ddz * ddz > maxD * maxD) continue;
         const afx = Math.sin(a.heading), afz = Math.cos(a.heading), bfx = Math.sin(b.heading), bfz = Math.cos(b.heading);
-        let best = null;
-        for (const ka of [1, -1]) for (const kb of [1, -1]) {
+        let found = false;
+        B.ov = 0;
+        for (let ia = 0; ia < 2; ia++) for (let ib = 0; ib < 2; ib++) {     // front/rear circle of each car
+          const ka = ia ? -1 : 1, kb = ib ? -1 : 1;
           const ax = a.position.x + afx * a.coff * ka, az = a.position.z + afz * a.coff * ka;
           const bx = b.position.x + bfx * b.coff * kb, bz = b.position.z + bfz * b.coff * kb;
           const dx = ax - bx, dz = az - bz, rr = a.cr + b.cr, d2 = dx * dx + dz * dz;
           if (d2 >= rr * rr) continue;
           const d = Math.sqrt(d2) || 0.001, ov = rr - d;
-          if (!best || ov > best.ov) best = { ov, nx: dx / d, nz: dz / d, ax: ax - a.position.x, az: az - a.position.z, bx: bx - b.position.x, bz: bz - b.position.z };
+          if (!found || ov > B.ov) {
+            found = true; B.ov = ov; B.nx = dx / d; B.nz = dz / d;
+            B.ax = ax - a.position.x; B.az = az - a.position.z; B.bx = bx - b.position.x; B.bz = bz - b.position.z;
+            B.cax = ax - B.nx * a.cr; B.caz = az - B.nz * a.cr; B.cbx = bx + B.nx * b.cr; B.cbz = bz + B.nz * b.cr;   // contact points
+          }
         }
-        if (!best) continue;
+        if (!found) continue;
         a.sleeping = false; b.sleeping = false;
         const ma = a.mass, mb = b.mass, fa = mb / (ma + mb);
-        a.position.x += best.nx * best.ov * fa; a.position.z += best.nz * best.ov * fa;
-        b.position.x -= best.nx * best.ov * (1 - fa); b.position.z -= best.nz * best.ov * (1 - fa);
-        const rvx = a.vx - b.vx, rvz = a.vz - b.vz, vn = rvx * best.nx + rvz * best.nz;
+        a.position.x += B.nx * B.ov * fa; a.position.z += B.nz * B.ov * fa;
+        b.position.x -= B.nx * B.ov * (1 - fa); b.position.z -= B.nz * B.ov * (1 - fa);
+        const rvx = a.vx - b.vx, rvz = a.vz - b.vz, vn = rvx * B.nx + rvz * B.nz;
         if (vn < 0) {
           const j2 = -(1.25) * vn / (1 / ma + 1 / mb);
-          a.vx += best.nx * j2 / ma; a.vz += best.nz * j2 / ma;
-          b.vx -= best.nx * j2 / mb; b.vz -= best.nz * j2 / mb;
-          const I = 1.9, jx = best.nx * -vn, jz = best.nz * -vn;
-          a.yawVel = Math.max(-3, Math.min(3, a.yawVel + 0.4 * (jx * best.az - jz * best.ax) / I * (mb / (ma + mb)) * 2));
-          b.yawVel = Math.max(-3, Math.min(3, b.yawVel - 0.4 * (jx * best.bz - jz * best.bx) / I * (ma / (ma + mb)) * 2));
+          a.vx += B.nx * j2 / ma; a.vz += B.nz * j2 / ma;
+          b.vx -= B.nx * j2 / mb; b.vz -= B.nz * j2 / mb;
+          const I = 1.9, jx = B.nx * -vn, jz = B.nz * -vn;
+          a.yawVel = Math.max(-3, Math.min(3, a.yawVel + 0.4 * (jx * B.az - jz * B.ax) / I * (mb / (ma + mb)) * 2));
+          b.yawVel = Math.max(-3, Math.min(3, b.yawVel - 0.4 * (jx * B.bz - jz * B.bx) / I * (ma / (ma + mb)) * 2));
           a.speed = a.vx * afx + a.vz * afz; b.speed = b.vx * bfx + b.vz * bfz;
-          this.registerImpact(a, b, -vn);
+          this.registerImpact(a, b, -vn, B.cax, B.caz, B.cbx, B.cbz);
         }
       }
     }
@@ -319,11 +359,9 @@ export class VehicleManager {
   }
 
   randomType(traffic) {
-    const r = Math.random();
-    if (r < 0.42) return 'sedan';
-    if (r < 0.58) return 'taxi';
-    if (r < 0.76) return traffic ? 'sports' : 'sports';
-    return 'truck';
+    const mix = traffic ? MIX_TRAFFIC : MIX_PARKED, r = Math.random();
+    for (let i = 0; i < mix.length; i++) if (r < mix[i][1]) return mix[i][0];
+    return 'sedan';
   }
 
   spawnTraffic(px, pz, initial = false) {
@@ -342,7 +380,6 @@ export class VehicleManager {
     if (!p || !this.clearSpot(p.x, p.z, 6.5)) return null;
     if (!initial && this.inView(p.x, p.z)) return null;
     const v = this.spawn(Math.random() < 0.15 ? 'truck' : this.randomType(false), p.x, p.z, p.heading, { driver: null });
-    if (v.type === 'taxi' && Math.random() < 0.5) { /* keep */ }
     v.sleeping = true;
     return v;
   }

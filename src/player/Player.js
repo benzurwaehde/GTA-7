@@ -9,6 +9,7 @@ const AIM_SLOW = 0.55, STRIDE = 2.3; // aim-mode speed factor; metres per footst
 const WALK = 4.4, RUN = 8.2, GRAVITY = 24, JUMP_V = 8, ENTER_RANGE = 4;
 // Sign convention for vehicle.setControls({steer}): +1 = steer RIGHT (D key), see ARCHITECTURE.md.
 const STEER_LEFT = -1;
+const DIGITS = ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7']; // fists, pistol, SMG, shotgun, rifle, sniper, grenade
 
 export class Player {
   constructor(game) {
@@ -24,7 +25,7 @@ export class Player {
     this.stateT = 0;
     this.spawned = false;
     this.lastHorn = 0;
-    this.aimK = 0; this.stepDist = 0; this.hspeed = 0;
+    this.aimK = 0; this.scopeK = 0; this.stepDist = 0; this.hspeed = 0;
 
     this.character = new Character();
     this.mesh = this.character.root;
@@ -196,17 +197,31 @@ export class Player {
     this.vel.z += (wz * speed - this.vel.z) * k;
 
     if (this.grounded && inp.pressed('Space')) { this.vy = JUMP_V; this.grounded = false; }
-    this.vy -= GRAVITY * dt;
-    this.position.y += this.vy * dt;
-    if (this.position.y <= 0) { this.position.y = 0; this.vy = 0; this.grounded = true; }
+    // ground height: flat in the city, beach slope and pier decks via world.groundAt (T3), 0 otherwise
+    const world = g.world, gy = world?.groundAt?.(this.position.x, this.position.z) ?? 0;
+    if (this.grounded && this.vy <= 0 && this.position.y - gy < 0.4) { this.position.y = gy; this.vy = 0; }
+    else {
+      this.vy -= GRAVITY * dt;
+      this.position.y += this.vy * dt;
+      if (this.position.y <= gy) { this.position.y = gy; this.vy = 0; this.grounded = true; }
+    }
 
+    const px = this.position.x, pz = this.position.z;
     this.position.x += this.vel.x * dt; this.position.z += this.vel.z * dt;
     this.refreshNear();
     if (this.near.length) resolveCircleVsBoxes(this.position, this.radius, this.near);
     if (this.position.y < 1.2) { this.collideVehicles(); if (this.near.length) resolveCircleVsBoxes(this.position, this.radius, this.near); }
-    const lim = CITY.half - 1;
-    this.position.x = Math.max(-lim, Math.min(lim, this.position.x));
-    this.position.z = Math.max(-lim, Math.min(lim, this.position.z));
+    if (world?.isWalkable) { // land, beach, pier and quay; deep water is blocked (slide along the edge)
+      if (!world.isWalkable(this.position.x, this.position.z)) {
+        if (world.isWalkable(this.position.x, pz)) { this.position.z = pz; this.vel.z = 0; }
+        else if (world.isWalkable(px, this.position.z)) { this.position.x = px; this.vel.x = 0; }
+        else { this.position.x = px; this.position.z = pz; this.vel.x = this.vel.z = 0; }
+      }
+    } else {
+      const lim = world?.playLimit ?? CITY.half - 1;
+      this.position.x = Math.max(-lim, Math.min(lim, this.position.x));
+      this.position.z = Math.max(-lim, Math.min(lim, this.position.z));
+    }
 
     // facing
     const hs = Math.hypot(this.vel.x, this.vel.z);
@@ -228,27 +243,34 @@ export class Player {
       this.cam.snap(0);
     }
     this.refreshNear();
+    this.weapons.updateFx(dt);
+    const wheelOpen = !!g.weaponWheel?.open, shopOpen = !!g.shop?.isOpen;
 
     if (this.state !== 'alive') {
       this.stateT += dt;
       if (this.state === 'dead') this.character.update(dt, { dying: Math.min(1, this.stateT / 0.7) + 0.0001 });
       else this.character.update(dt, { speed: 0, grounded: true });
       this.mesh.position.copy(this.position);
+      this.mesh.visible = true; this.scopeK = 0;
       this.cam.update(dt, this.position, { colliders: this.near });
       if (this.stateT > (this.state === 'dead' ? 4 : 3)) this.respawn();
       return;
     }
 
     // weapon switching
-    if (!this.vehicle) {
+    if (!this.vehicle && !wheelOpen && !shopOpen) {
       if (inp.pressed('KeyQ')) this.weapons.cycle(-1);
       if (inp.pressed('KeyE')) this.weapons.cycle(1);
-      if (inp.pressed('Digit1')) this.weapons.select(0);
-      if (inp.pressed('Digit2')) this.weapons.select(1);
-      if (inp.pressed('Digit3')) this.weapons.select(2);
+      for (let i = 0; i < DIGITS.length; i++) if (inp.pressed(DIGITS[i])) this.weapons.select(i);
       const wh = inp.mouse.wheel;
       if (wh) this.weapons.cycle(wh > 0 ? 1 : -1);
       if (inp.pressed('KeyR')) this.weapons.startReload();
+    }
+    if (shopOpen) { // buying: the player stands still, the shop menu owns the keys
+      this.vel.set(0, 0, 0); this.aimK = 0; this.scopeK = 0; this.mesh.visible = true;
+      this.character.update(dt, { speed: 0, grounded: this.grounded, reload: -1 });
+      this.cam.update(dt, this.position, { colliders: this.near, freeze: true });
+      return;
     }
     if (inp.pressed('KeyF')) { if (this.vehicle) this.exitVehicle(); else this.tryEnterVehicle(); }
 
@@ -257,7 +279,7 @@ export class Player {
       else {
         this.drive(dt);
         this.weapons.update(dt, false, false, this.cam.yaw);
-        this.aimK = 0;
+        this.aimK = 0; this.scopeK = 0;
         this.cam.update(dt, this.position, { vehicle: this.vehicle, colliders: this.near });
         return;
       }
@@ -265,11 +287,15 @@ export class Player {
 
     const m = inp.mouse;
     const gunOut = !this.weapons.def.melee;
-    const aiming = gunOut && m.right;
+    const aiming = gunOut && m.right && !wheelOpen;
     this.aimK += ((aiming ? 1 : 0) - this.aimK) * (1 - Math.exp(-dt * 12));
+    // sniper rifle: right mouse button zooms through the scope (the body is hidden while fully scoped)
+    const scoping = aiming && !!this.weapons.def.scope;
+    this.scopeK += ((scoping ? 1 : 0) - this.scopeK) * (1 - Math.exp(-dt * 9));
+    this.mesh.visible = this.scopeK < 0.85;
     const mv = this.walk(dt, aiming);
-    const fireHeld = (m.locked && m.left) || inp.isDown('ControlLeft') || inp.isDown('ControlRight');
-    const firePressed = (m.locked && m.leftPressed) || inp.pressed('ControlLeft') || inp.pressed('ControlRight');
+    const fireHeld = !wheelOpen && ((m.locked && m.left) || inp.isDown('ControlLeft') || inp.isDown('ControlRight'));
+    const firePressed = !wheelOpen && ((m.locked && m.leftPressed) || inp.pressed('ControlLeft') || inp.pressed('ControlRight'));
     const fired = this.weapons.update(dt, fireHeld, firePressed, this.cam.yaw);
     if (fired && gunOut) this.aimT = 1.6;
     if (fired && !gunOut) this.aimT = 0.4;
@@ -281,7 +307,7 @@ export class Player {
 
     this.mesh.position.copy(this.position);
     this.mesh.rotation.y = this.heading;
-    this.character.update(dt, { speed: mv.hs, grounded: this.grounded, aiming: gunOut && (this.aimT > 0 || aiming), vy: this.vy, reload: this.weapons.reloadProgress });
-    this.cam.update(dt, this.position, { colliders: this.near, aim: this.aimK });
+    this.character.update(dt, { speed: mv.hs, grounded: this.grounded, aiming: gunOut && (this.aimT > 0 || aiming), vy: this.vy, reload: this.weapons.reloadProgress, pitch: Math.asin(Math.max(-1, Math.min(1, this.cam.aimDir.y))) });
+    this.cam.update(dt, this.position, { colliders: this.near, aim: this.aimK, scope: this.scopeK, freeze: wheelOpen });
   }
 }

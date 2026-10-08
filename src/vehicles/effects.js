@@ -119,27 +119,43 @@ class Particles {
 }
 
 // ---- debris -----------------------------------------------------------------------------------
-const DEBRIS = 40;
+// Charred wreck pieces: irregular slabs in the burnt paint colour of the car that blew up (dark metal for the rest).
+// They tumble, land and stay for a few seconds before shrinking away.
+const DEBRIS = 72;
+function slabGeometry() {
+  const g = new THREE.BoxGeometry(1, 1, 1).toNonIndexed(), P = g.attributes.position.array;
+  for (let i = 0; i < P.length; i += 3) {        // jitter shared corners identically so the faces stay closed
+    const k = Math.sin(P[i] * 91.7 + P[i + 1] * 47.3 + P[i + 2] * 23.1) * 43758.5453;
+    const j = (k - Math.floor(k) - 0.5) * 0.45;
+    P[i] += j * Math.sign(P[i]) * 0.5; P[i + 2] += j * 0.4; P[i + 1] += j * 0.15;
+  }
+  g.computeVertexNormals();
+  return g;
+}
 class Debris {
   constructor(scene) {
-    this.mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 0.5, 0.8), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8, metalness: 0.2 }), DEBRIS);
+    this.mesh = new THREE.InstancedMesh(slabGeometry(), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, metalness: 0.15, flatShading: true }), DEBRIS);
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.mesh.frustumCulled = false; this.mesh.castShadow = false;
     for (let i = 0; i < DEBRIS; i++) { this.mesh.setMatrixAt(i, _m.makeScale(0, 0, 0)); this.mesh.setColorAt(i, _c.setRGB(0.1, 0.1, 0.1)); }
     scene.add(this.mesh);
-    this.life = new Float32Array(DEBRIS); this.size = new Float32Array(DEBRIS);
+    this.life = new Float32Array(DEBRIS); this.size = new Float32Array(DEBRIS * 3);
     this.pos = new Float32Array(DEBRIS * 3); this.vel = new Float32Array(DEBRIS * 3);
     this.rot = new Float32Array(DEBRIS * 3); this.rotV = new Float32Array(DEBRIS * 3);
     this.next = 0; this.active = 0;
   }
-  emit(x, y, z, vx, vy, vz, size, hex) {
+  // size = (sx, sy, sz) in metres, color = THREE.Color (copied)
+  emit(x, y, z, vx, vy, vz, sx, sy, sz, color) {
     const i = this.next; this.next = (this.next + 1) % DEBRIS;
     if (this.life[i] <= 0) this.active++;
-    this.life[i] = 3.2 + Math.random(); this.size[i] = size;
-    this.pos.set([x, y, z], i * 3); this.vel.set([vx, vy, vz], i * 3);
-    this.rot.set([Math.random() * 6, Math.random() * 6, Math.random() * 6], i * 3);
-    this.rotV.set([(Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14], i * 3);
-    this.mesh.setColorAt(i, _c.setHex(hex));
+    const k = i * 3;
+    this.life[i] = 6 + Math.random() * 3;
+    this.size[k] = sx; this.size[k + 1] = sy; this.size[k + 2] = sz;
+    this.pos[k] = x; this.pos[k + 1] = y; this.pos[k + 2] = z;
+    this.vel[k] = vx; this.vel[k + 1] = vy; this.vel[k + 2] = vz;
+    this.rot[k] = Math.random() * 6; this.rot[k + 1] = Math.random() * 6; this.rot[k + 2] = Math.random() * 6;
+    this.rotV[k] = (Math.random() - 0.5) * 14; this.rotV[k + 1] = (Math.random() - 0.5) * 14; this.rotV[k + 2] = (Math.random() - 0.5) * 14;
+    this.mesh.setColorAt(i, color);
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
   }
   update(dt) {
@@ -151,17 +167,18 @@ class Debris {
       const k = i * 3;
       this.vel[k + 1] -= 20 * dt;
       this.pos[k] += this.vel[k] * dt; this.pos[k + 1] += this.vel[k + 1] * dt; this.pos[k + 2] += this.vel[k + 2] * dt;
-      if (this.pos[k + 1] < 0.12) {
-        this.pos[k + 1] = 0.12;
-        if (this.vel[k + 1] < 0) this.vel[k + 1] *= -0.35;
-        this.vel[k] *= 0.7; this.vel[k + 2] *= 0.7;
-        this.rotV[k] *= 0.6; this.rotV[k + 1] *= 0.6; this.rotV[k + 2] *= 0.6;
+      const floor = this.size[k + 1] * 0.5 + 0.03;
+      if (this.pos[k + 1] < floor) {
+        this.pos[k + 1] = floor;
+        if (this.vel[k + 1] < 0) this.vel[k + 1] *= -0.3;
+        this.vel[k] *= 0.6; this.vel[k + 2] *= 0.6;
+        this.rotV[k] *= 0.5; this.rotV[k + 1] *= 0.5; this.rotV[k + 2] *= 0.5;
       }
       this.rot[k] += this.rotV[k] * dt; this.rot[k + 1] += this.rotV[k + 1] * dt; this.rot[k + 2] += this.rotV[k + 2] * dt;
-      const sc = this.size[i] * Math.min(1, this.life[i] * 1.5);
+      const f = Math.min(1, this.life[i] * 1.5);
       _p.set(this.pos[k], this.pos[k + 1], this.pos[k + 2]);
       _q.setFromEuler(_e.set(this.rot[k], this.rot[k + 1], this.rot[k + 2]));
-      this.mesh.setMatrixAt(i, _m.compose(_p, _q, _s.setScalar(sc)));
+      this.mesh.setMatrixAt(i, _m.compose(_p, _q, _s.set(this.size[k] * f, this.size[k + 1] * f, this.size[k + 2] * f)));
     }
     this.mesh.instanceMatrix.needsUpdate = true;
   }
@@ -269,7 +286,8 @@ export class Effects {
   firePuff(x, y, z) {
     this.fire.emit(x + (Math.random() - 0.5) * 1.0, y, z + (Math.random() - 0.5) * 1.0, (Math.random() - 0.5) * 0.8, 0.8 + Math.random() * 1.6, (Math.random() - 0.5) * 0.8, 0.45 + Math.random() * 0.5, 0.9, 0.3, 0.85);
   }
-  explosion(x, y, z) {
+  // paint = hex colour of the exploding car: the debris is that paint, burnt black (default: dark metal only)
+  explosion(x, y, z, paint) {
     const cy = y + 0.9;
     // hot core flash + fireball made of overlapping soft sprites
     this.fire.emit(x, cy + 0.4, z, 0, 0.5, 0, 0.35, 5, 10, 1);
@@ -282,10 +300,12 @@ export class Effects {
       const a = Math.random() * 6.283, sp = 1 + Math.random() * 4;
       this.smoke.emit(x, cy + 0.3, z, Math.cos(a) * sp, 1.5 + Math.random() * 3.5, Math.sin(a) * sp, 2.4 + Math.random() * 1.8, 1.6, 4.8 + Math.random() * 1.8, 0.85);
     }
-    // debris chunks: mostly dark metal, a few in the car's paint colour
-    for (let i = 0; i < 16; i++) {
-      const a = Math.random() * 6.283, sp = 3 + Math.random() * 8;
-      this.debris.emit(x, cy, z, Math.cos(a) * sp, 6 + Math.random() * 9, Math.sin(a) * sp, 0.12 + Math.random() * 0.22, i % 4 === 0 ? 0xb03020 : 0x1c1c1e);
+    // debris: burnt pieces of the car's paint colour (every 3rd one dark metal), thin slabs of different sizes
+    for (let i = 0; i < 26; i++) {
+      const a = Math.random() * 6.283, sp = 3 + Math.random() * 8, sz = 0.14 + Math.random() * 0.3;
+      if (paint === undefined || i % 3 === 0) _c.setRGB(0.03, 0.03, 0.035).multiplyScalar(0.6 + Math.random() * 0.8);
+      else _c.setHex(paint).multiplyScalar(0.1 + Math.random() * 0.14);       // charred paint
+      this.debris.emit(x, cy, z, Math.cos(a) * sp, 6 + Math.random() * 9, Math.sin(a) * sp, sz * (0.6 + Math.random() * 1.2), sz * (0.12 + Math.random() * 0.3), sz * (0.5 + Math.random()), _c);
     }
     this.blastT = 0;
     this.blastLight.position.set(x, y + 3, z);

@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { Human, humanAvailable } from '../characters/Human.js';
+import { surfaceY } from '../characters/surface.js';
 
 // Procedural humanoid. Origin = feet, model faces +Z. Every limb is a pivot Group so animation is pure rotation maths.
 const mats = {
@@ -22,7 +24,7 @@ const pivot = (x, y, z, parent) => { const g = new THREE.Group(); g.position.set
 const clamp01 = v => Math.max(0, Math.min(1, v));
 const damp = (a, b, k, dt) => a + (b - a) * (1 - Math.exp(-k * dt));
 
-export class Character {
+class ProceduralCharacter {
   constructor() {
     this.root = new THREE.Group();          // positioned/yawed by the player
     this.body = pivot(0, 0, 0, this.root);  // tilted when dying
@@ -83,7 +85,10 @@ export class Character {
     this.currentGun = null;
 
     this.root.traverse(o => { if (o.isMesh) o.receiveShadow = false; });
+    this.rightHand = this.armR.hand;   // same contract as the skinned character
   }
+  setPose() { /* procedural fallback has no poses */ }
+  setWeaponStyle() { /* procedural fallback: one-handed only */ }
 
   setWeapon(id) {
     this.currentGun = this.guns[id] || null;
@@ -171,5 +176,73 @@ export class Character {
     this.legL.knee.rotation.x = 0.3 * e; this.legR.knee.rotation.x = 0.5 * e;
     this.armL.sh.rotation.set(-0.3 * e, 0, 0.9 * e); this.armR.sh.rotation.set(0.2 * e, 0, -1.0 * e);
     this.spine.rotation.set(0, 0, 0); this.hips.position.y = 0.95; this.hips.position.z = 0;
+  }
+}
+
+// ---- skinned character (GLB), falls back to the procedural one when the model is missing ----
+const WALK_REF = 1.65, RUN_REF = 3.6;   // m/s the clips travel at timeScale 1 (foot contact speed measured in Blender)
+const PLAYER_LOOK = { shirt: 0xc23b5a, pants: 0x2f4f86, hair: 0x2a1a12, skin: 0xd9a47a };
+const gunMat = new THREE.MeshStandardMaterial({ color: 0x23252b, roughness: 0.4, metalness: 0.7 });
+const gunMat2 = new THREE.MeshStandardMaterial({ color: 0x555a63, roughness: 0.4, metalness: 0.7 });
+const gbox = (w, h, d, m, x, y, z) => { const me = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); me.position.set(x, y, z); return me; };
+
+export class Character {
+  constructor() {
+    if (!humanAvailable('human_man_a')) return new ProceduralCharacter();
+    this.human = new Human('human_man_a', PLAYER_LOOK);
+    this.root = this.human.root;
+    this.rightHand = this.human.makeRightHand();   // +Z = hand/forearm direction; weapons mount here
+    this.gunMount = null;
+    // fallback guns (only shown when the weapon system has no model for the weapon)
+    const pistol = new THREE.Group(); pistol.add(gbox(0.05, 0.07, 0.24, gunMat, 0, 0, 0.1), gbox(0.045, 0.12, 0.06, gunMat2, 0, -0.08, 0.02));
+    pistol.muzzle = new THREE.Object3D(); pistol.muzzle.position.set(0, 0.01, 0.24); pistol.add(pistol.muzzle);
+    const smg = new THREE.Group(); smg.add(gbox(0.06, 0.09, 0.4, gunMat, 0, 0, 0.15), gbox(0.045, 0.2, 0.06, gunMat2, 0, -0.14, 0.12));
+    smg.muzzle = new THREE.Object3D(); smg.muzzle.position.set(0, 0, 0.5); smg.add(smg.muzzle);
+    this.guns = { pistol, smg };
+    for (const g of Object.values(this.guns)) { g.visible = false; this.rightHand.add(g); }
+    this.currentGun = null;
+    this.pose = 'idle'; this.punchHold = false; this.t = 0; this.speedBlend = 0; this.airT = 0;
+    this.human.play('idle', { fade: 0 });
+  }
+  setWeapon(id) {
+    this.currentGun = this.guns[id] || null;
+    for (const [k, g] of Object.entries(this.guns)) g.visible = k === id;
+  }
+  get muzzleObject() { return this.currentGun?.muzzle || this.rightHand; }
+  // 'aim' raises the arms, anything else is the normal locomotion pose
+  // opts.twoHanded: left hand grips the fore-end (rifle, shotgun, sniper)
+  setPose(name, opts = {}) { this.pose = name || 'idle'; if (opts && opts.twoHanded !== undefined) this.human.twoHanded = !!opts.twoHanded; }
+  // 'pistol' = one-handed aim, 'rifle' = two-handed aim with the left hand on the fore-end, 'none' = fists
+  setWeaponStyle(style) { this.weaponStyle = style; this.human.twoHanded = style === 'rifle'; }
+  punch() { this.human.play('punch', { fade: 0.06, restart: true, speed: 1.5 }); this.punchHold = true; }
+  get punching() { return this.punchHold; }
+
+  // speed: horizontal m/s, grounded: bool, aiming: bool, dying: 0..1 fall progress
+  update(dt, { speed = 0, grounded = true, aiming = false, dying = 0, vy = 0, reload = -1, pitch = 0 } = {}) {
+    const h = this.human;
+    this.t += dt;
+    h.model.position.y = surfaceY(this.root.position.x, this.root.position.z);   // feet on the slab / road, not inside it
+    if (dying > 0) {
+      if (h.currentName !== 'death') h.play('death', { fade: 0.1, restart: true });
+      h.aimW = 0; h.update(dt);
+      return;
+    }
+    if (h.currentName === 'death') h.play('idle', { fade: 0, restart: true });
+    this.speedBlend += (speed - this.speedBlend) * (1 - Math.exp(-10 * dt));
+    if (this.punchHold && h.clipDone) { this.punchHold = false; h.currentName = ''; }
+    const air = !grounded;
+    this.airT = air ? this.airT + dt : 0;
+    if (!this.punchHold) {
+      const sp = this.speedBlend;
+      if (air && this.airT > 0.12) h.play('jump', { fade: 0.1 });
+      else if (sp > 2.6) h.play('run', { fade: 0.2, speed: Math.min(2.2, Math.max(0.7, sp / RUN_REF)) });
+      else if (sp > 0.4) h.play('walk', { fade: 0.2, speed: Math.min(1.8, Math.max(0.6, sp / WALK_REF)) });
+      else h.play('idle', { fade: 0.25 });
+    }
+    // arms: raised while aiming / pointing a gun, lowered a bit for the reload
+    const want = (aiming || this.pose === 'aim') && !this.punchHold && !air ? 1 : 0;
+    h.aimW += (want - h.aimW) * (1 - Math.exp(-14 * dt));
+    h.aimPitch = pitch;
+    h.update(dt);
   }
 }

@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { rayBox } from '../core/physics.js';
 
+const AIM_SHOULDER = 0.55; // extra sideways camera offset in aim mode (m)
+
 export const lerpAngle = (a, b, t) => {
   let d = (b - a) % (Math.PI * 2);
   if (d > Math.PI) d -= Math.PI * 2; if (d < -Math.PI) d += Math.PI * 2;
@@ -29,10 +31,11 @@ export class CameraRig {
   // yaw: set camera behind a heading immediately
   snap(heading) { this.yaw = heading; this.pitch = 0.25; this.ready = false; }
 
-  update(dt, focus, { vehicle = null, colliders = null, aim = 0 } = {}) {
+  update(dt, focus, { vehicle = null, colliders = null, aim = 0, scope = 0, freeze = false } = {}) {
     const g = this.game, m = g.input.mouse;
-    if (m.locked && (m.dx || m.dy)) {
-      const sens = this.sens * (1 - 0.4 * aim);
+    if (freeze) this.idle = 0; // weapon wheel / shop open: the mouse does not turn the camera
+    else if (m.locked && (m.dx || m.dy)) {
+      const sens = this.sens * (1 - 0.4 * aim) * (1 - 0.8 * scope);
       this.yaw -= m.dx * sens;
       this.pitch = Math.max(-0.35, Math.min(1.25, this.pitch + m.dy * sens));
       this.idle = 0;
@@ -52,7 +55,13 @@ export class CameraRig {
         this.yaw = lerpAngle(this.yaw, vehicle.heading || 0, k);
         this.pitch += (wantPitch - this.pitch) * k;
       }
-    } else { wantDist = 4.6 - 2.4 * aim; height = 1.55 + 0.05 * aim; shoulder = 0.55 + 0.25 * aim; fov = 65 - 19 * aim; }
+    } else {
+      // aim mode: close over-the-shoulder view, the character sits well to the left so the crosshair area stays free
+      wantDist = 4.6 - 2.0 * aim; height = 1.55 + 0.05 * aim; shoulder = 0.55 + AIM_SHOULDER * aim; fov = 65 - 19 * aim;
+      if (scope > 0) { // sniper scope: camera at the head, no offset, narrow field of view
+        wantDist = wantDist * (1 - scope) + 0.35 * scope; shoulder *= 1 - scope; fov = fov * (1 - scope) + 12 * scope;
+      }
+    }
 
     // look-at target (with shoulder offset on foot)
     const rx = -Math.cos(this.yaw), rz = Math.sin(this.yaw);

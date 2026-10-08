@@ -117,4 +117,50 @@ export const SFX = {
     noiseBurst(ctx, out, noise, t, 'bandpass', 2400, 1500, 0.03, 0.55 * v, 4, 0.001);
     tone(ctx, out, t, 'square', 900, 500, 0.025, 0.06 * v, 0.001, 3000);
   },
+  // ---- Sprint 3 weapons ----
+  shotgun(ctx, out, noise, t, v) {
+    noiseBurst(ctx, out, noise, t, 'highpass', 500, 250, 0.3, 1.0 * v, 0.5);
+    noiseBurst(ctx, out, noise, t, 'lowpass', 2200, 150, 0.55, 0.8 * v, 0.5);
+    tone(ctx, out, t, 'sine', 120, 30, 0.3, 1.0 * v);
+    noiseBurst(ctx, out, noise, t + 0.42, 'bandpass', 2600, 900, 0.07, 0.4 * v, 2, 0.003); // pump
+    noiseBurst(ctx, out, noise, t + 0.52, 'bandpass', 1800, 700, 0.06, 0.45 * v, 2, 0.003);
+  },
+  rifle(ctx, out, noise, t, v) {
+    noiseBurst(ctx, out, noise, t, 'bandpass', 1600, 600, 0.13, 0.8 * v, 0.6);
+    noiseBurst(ctx, out, noise, t, 'lowpass', 1400, 200, 0.18, 0.5 * v, 0.6);
+    tone(ctx, out, t, 'triangle', 170, 55, 0.11, 0.7 * v);
+  },
+  sniper(ctx, out, noise, t, v) {
+    noiseBurst(ctx, out, noise, t, 'highpass', 1200, 500, 0.12, 1.0 * v, 0.5);
+    noiseBurst(ctx, out, noise, t, 'lowpass', 3000, 120, 0.9, 0.8 * v, 0.4);
+    tone(ctx, out, t, 'sine', 140, 28, 0.5, 1.0 * v);
+    noiseBurst(ctx, out, noise, t + 0.5, 'bandpass', 2800, 1000, 0.05, 0.4 * v, 3, 0.002); // bolt
+    noiseBurst(ctx, out, noise, t + 0.62, 'bandpass', 2000, 900, 0.05, 0.45 * v, 3, 0.002);
+  },
+  // grenade: pin pulled + spoon flying off
+  grenade(ctx, out, noise, t, v) {
+    noiseBurst(ctx, out, noise, t, 'bandpass', 3200, 1500, 0.04, 0.5 * v, 4, 0.001);
+    tone(ctx, out, t + 0.06, 'square', 1500, 900, 0.03, 0.08 * v, 0.001, 3500);
+    noiseBurst(ctx, out, noise, t + 0.1, 'highpass', 900, 500, 0.18, 0.18 * v, 0.7, 0.01);
+  },
+  // metallic clink when a grenade bounces
+  bounce(ctx, out, noise, t, v) {
+    tone(ctx, out, t, 'square', 1250, 900, 0.05, 0.12 * v, 0.001, 4000);
+    tone(ctx, out, t + 0.01, 'sine', 2300, 1700, 0.06, 0.1 * v, 0.001);
+    noiseBurst(ctx, out, noise, t, 'bandpass', 3000, 1800, 0.03, 0.2 * v, 3, 0.001);
+  },
+  // shop: cash register
+  buy(ctx, out, noise, t, v) {
+    tone(ctx, out, t, 'square', 1568, 1568, 0.06, 0.14 * v, 0.002, 4500);
+    tone(ctx, out, t + 0.07, 'square', 2093, 2093, 0.3, 0.14 * v, 0.002, 4500);
+    noiseBurst(ctx, out, noise, t, 'bandpass', 4000, 2500, 0.05, 0.2 * v, 3, 0.001);
+  },
+  // shop: purchase denied
+  deny(ctx, out, noise, t, v) {
+    tone(ctx, out, t, 'sawtooth', 160, 110, 0.18, 0.2 * v, 0.003, 700);
+  },
+  // weapon wheel tick
+  tick(ctx, out, noise, t, v) {
+    tone(ctx, out, t, 'square', 1800, 1400, 0.018, 0.05 * v, 0.001, 4000);
+  },
 };

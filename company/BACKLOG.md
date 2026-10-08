@@ -26,6 +26,13 @@
 - [ ] Straßensperre: NPC-Verkehr umleiten. Save: Position außerhalb von Gebäuden erzwingen
 - [ ] Chase-Mission: faires Aufgeben ab 300 m testen
 
+## Aus Sprint 3 offen (chef-feedback.md)
+- [ ] Ragdoll-Explosionsimpuls deckeln (Körper flogen > 100 m). Spieler-Ragdoll, Einsteige-Animation ins Auto
+- [ ] Motorradfahrer als neue Figur. Rotor- und Motorsounds der neuen Fahrzeuge, Hubschrauber auf der Minimap
+- [ ] Schrotflinte Patrone für Patrone laden, Wurfbahn-Vorschau für Granaten, Einschusslöcher an Fahrzeugen
+- [ ] Shop-Blip „$“ über `shop.getBlips()` in der Minimap
+- [ ] Welt-Draw-Call-Budget ausgereizt: weitere Deko nur mit Merge/LOD. Riesenrad-Lichter farbiger
+
 ## Later ideas
 - Save/load (localStorage), garages, weapon shops, more vehicle types (bikes, boats), water & beach district
 - Story campaign with characters and cutscenes, rampages, stunt jumps, collectibles

@@ -4,6 +4,7 @@ import { CITY, ROAD_LINES } from '../core/config.js';
 import { ColliderGrid } from '../npc/ColliderGrid.js';
 import { nearestIndex, nearestNode, nodePos, randomNodeAround, sidewalkPath } from '../npc/sidewalk.js';
 import { inView, playerPos, wrapAngle } from '../npc/view.js';
+import { Helicopter } from '../vehicles/Helicopter.js';
 
 const B = CITY.blocks;
 const FOOT_TARGET = [0, 2, 2, 3, 4, 5];
@@ -14,6 +15,7 @@ const FORGET_TIME = 20;
 const LANE = CITY.roadWidth / 4;      // lane center offset from the road center (matches vehicles/traffic.js)
 const FAR = 60;                       // beyond this distance police cars keep to the right lane
 const BLOCK_DIST = 85;                // roadblock distance ahead of the player
+const HELI_DELAY = 4, HELI_COOLDOWN = 45;   // seconds: after reaching 5 stars / after a helicopter was shot down
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 // Shortest path over the road-intersection grid (BFS). Returns [{x,z}...] from start to goal.
@@ -36,6 +38,7 @@ function roadPath(si, sj, gi, gj) {
   }
   return out.reverse();
 }
+const sameCell = (si, sj, gi, gj, c) => c.pathKey === ((si * 16 + sj) * 16 + gi) * 16 + gj;
 
 
 // Pure-pursuit target: nearest point on the polyline plus `look` meters ahead along it.
@@ -84,6 +87,10 @@ export class Police {
     this.noCarsT = 0; this.blockDbg = '';
     this.tracers = [];
     this.elapsed = 0;
+    this.helicopter = null;    // active Helicopter (5 stars) or null; weapons call helicopter.hit(point, dmg)
+    this.heliCd = HELI_DELAY;
+    this._lt = { x: 0, z: 0 };  // scratch: leave target
+    this._opt = { aggressive: false, slowNear: false, avoid: false };   // scratch: drive options
 
     const ev = game.events;
     ev?.on('ped:killed', e => this._onKilled(e));
@@ -115,6 +122,7 @@ export class Police {
     this._apply(0);
     this._despawnAll();
   }
+
   _apply(level) {
     const g = this.game;
     const old = this.wanted;
@@ -144,8 +152,9 @@ export class Police {
     }
   }
   _witness(x, z, civR, copR) {
-    const peds = this.game.peds?.list || [];
-    for (const p of peds) {
+    const peds = this.game.peds?.list;
+    if (peds) for (let i = 0; i < peds.length; i++) {
+      const p = peds[i];
       if (!p.alive) continue;
       const d = Math.hypot(p.position.x - x, p.position.z - z);
       if (p.isCop ? d < copR : d < civR) return p.isCop ? 2 : 1;
@@ -173,12 +182,16 @@ export class Police {
     const v = e.vehicle;
     let hitCop = false;
     if (v.isPolice && v !== pv && v.position.distanceTo(pv.position) < 9) hitCop = true;
-    if (v === pv) for (const c of this.game.vehicles?.list || []) if (c.isPolice && c !== pv && c.position.distanceTo(pv.position) < 6) hitCop = true;
+    const vl = this.game.vehicles?.list;
+    if (v === pv && vl) for (let i = 0; i < vl.length; i++) { const c = vl[i]; if (c.isPolice && c !== pv && c.position.distanceTo(pv.position) < 6) hitCop = true; }
     if (hitCop) { this.crimeCd = 3; this.addHeat(1); }
   }
   _watchPoliceCars() {
     const g = this.game, pv = g.player?.vehicle;
-    for (const v of g.vehicles?.list || []) {
+    const vl = g.vehicles?.list;
+    if (!vl) return;
+    for (let i = 0; i < vl.length; i++) {
+      const v = vl[i];
       if (!v.isPolice) continue;
       const last = this.lastHealth.get(v);
       this.lastHealth.set(v, v.health);
@@ -218,21 +231,40 @@ export class Police {
       if (!c.vehicle.destroyed && (c.state === 'parked' || c.vehicle.driver === 'police' || c.vehicle.driver === null)) this.cars[w++] = c;
     }
     this.cars.length = w;
-    for (const c of this.cars) if (c.state !== 'parked' && c.state !== 'leave' && c.vehicle.driver !== 'police') c.state = 'parked';
+    for (let i = 0; i < this.cars.length; i++) { const c = this.cars[i]; if (c.state !== 'parked' && c.state !== 'leave' && c.vehicle.driver !== 'police') c.state = 'parked'; }
 
     if (this.wanted > 0) {
       if (alive) {
         this._spawnLogic(dt, pp);
-        for (const c of this.cars) this._updateCar(c, dt, pp);
+        for (let i = 0; i < this.cars.length; i++) this._updateCar(this.cars[i], dt, pp);
         this._roadblock(dt, pp);
-        for (const c of this.cops) this._updateCop(c, dt, pp);
+        for (let i = 0; i < this.cops.length; i++) this._updateCop(this.cops[i], dt, pp);
         this._evasion(dt, pp);
         this._busting(dt, pp);
       } else {
-        for (const c of this.cops) { c.cmd.vx = c.cmd.vz = 0; }
+        for (let i = 0; i < this.cops.length; i++) { const c = this.cops[i]; c.cmd.vx = c.cmd.vz = 0; }
       }
     } else if (this.cars.length || this.cops.length) {
       this._updateLeaving(dt, pp);
+    }
+    this._updateHeli(dt, pp, alive);
+  }
+
+  // ---------- helicopter (5 stars) ----------
+  _updateHeli(dt, pp, alive) {
+    let h = this.helicopter;
+    if (h && h.dead) { h = this.helicopter = null; this.heliCd = HELI_COOLDOWN; }
+    if (!h) {
+      if (this.wanted >= 5 && alive && this.game.scene) {
+        if ((this.heliCd -= dt) <= 0) { h = this.helicopter = new Helicopter(this.game, this); h.start(pp); }
+      } else this.heliCd = Math.max(this.heliCd, HELI_DELAY);
+      return;
+    }
+    if (this.wanted < 5 || !alive) h.leave();
+    h.update(dt, pp);
+    if (h.state === 'leave') {          // gone once it is far away (or lost for good)
+      const d = Math.hypot(h.position.x - pp.x, h.position.z - pp.z);
+      if (d > 260 || h.stateT > 30) h.dispose();
     }
   }
 
@@ -329,14 +361,15 @@ export class Police {
     this.game.vehicles?.remove?.(c.vehicle);
   }
   _despawnAll() {
-    for (const c of this.cops.slice()) this._removeCop(c);
-    for (const c of this.cars.slice()) this._removeCar(c);
-    this.cops = []; this.cars = []; this.block = null; this.blockT = 0.5; this.blockTry = 0;
+    for (let i = this.cops.length - 1; i >= 0; i--) this._removeCop(this.cops[i]);
+    for (let i = this.cars.length - 1; i >= 0; i--) this._removeCar(this.cars[i]);
+    this.cops.length = 0; this.cars.length = 0; this.block = null; this.blockT = 0.5; this.blockTry = 0;
+    if (this.helicopter) { this.helicopter.dispose(); this.helicopter = null; this.heliCd = HELI_DELAY; }
   }
   _releaseUnits() {
     this.block = null;
-    for (const c of this.cars) { if (c.state !== 'parked') c.state = 'leave'; c.leaveT = 0; c.vehicle.sirenOn = false; }
-    for (const c of this.cops) { c.cop.leave = true; c.cop.leaveT = 0; }
+    for (let i = 0; i < this.cars.length; i++) { const c = this.cars[i]; if (c.state !== 'parked') c.state = 'leave'; c.leaveT = 0; c.vehicle.sirenOn = false; }
+    for (let i = 0; i < this.cops.length; i++) { const c = this.cops[i]; c.cop.leave = true; c.cop.leaveT = 0; }
   }
 
   // ---------- cars ----------
@@ -363,8 +396,14 @@ export class Police {
       c.pathT -= dt;
       if (c.pathT <= 0 || !c.path) {
         c.pathT = 1.2;
-        c.path = roadPath(nearestIndex(v.position.x), nearestIndex(v.position.z), nearestIndex(pp.x), nearestIndex(pp.z));
-        c.path.push({ x: pp.x, z: pp.z });
+        // the BFS only reruns when the car or the player changed road cell; otherwise just move the final point
+        const si = nearestIndex(v.position.x), sj = nearestIndex(v.position.z), gi = nearestIndex(pp.x), gj = nearestIndex(pp.z);
+        if (c.path && sameCell(si, sj, gi, gj, c)) { const e = c.path[c.path.length - 1]; e.x = pp.x; e.z = pp.z; }
+        else {
+          c.path = roadPath(si, sj, gi, gj);
+          c.path.push({ x: pp.x, z: pp.z });
+          c.pathKey = ((si * 16 + sj) * 16 + gi) * 16 + gj;
+        }
       }
       if (d > 30) {
         const t = pursuitTarget(c.path, v.position.x, v.position.z, 18, this._pt);
@@ -377,7 +416,8 @@ export class Police {
       const lx = tx - v.position.x, lz = tz - v.position.z, ll = Math.hypot(lx, lz) || 1;
       tx += -lz / ll * LANE * laneK; tz += lx / ll * LANE * laneK;
     }
-    this._drive(c, dt, tx, tz, { aggressive: this.wanted >= 4 || !!pv, slowNear: onFoot && d < 40, avoid: d > 40 });
+    const o = this._opt; o.aggressive = this.wanted >= 4 || !!pv; o.slowNear = onFoot && d < 40; o.avoid = d > 40;
+    this._drive(c, dt, tx, tz, o);
   }
 
   _drive(c, dt, tx, tz, opt) {
@@ -395,7 +435,9 @@ export class Police {
     if (opt.avoid) {
       const hx = Math.sin(v.heading), hz = Math.cos(v.heading), look = 12 + Math.abs(sp) * 0.7, pv = this.game.player?.vehicle;
       let best = null, bf = look, bl = 0;
-      for (const o of this.game.vehicles?.list || []) {
+      const vl = this.game.vehicles?.list;
+      if (vl) for (let i = 0; i < vl.length; i++) {
+        const o = vl[i];
         if (o === v || o === pv || o.destroyed || !o.position) continue;
         const rx = o.position.x - v.position.x, rz = o.position.z - v.position.z;
         const f = rx * hx + rz * hz;
@@ -535,7 +577,8 @@ export class Police {
     }
 
     // separation from other cops
-    for (const o of this.cops) {
+    for (let i = 0; i < this.cops.length; i++) {
+      const o = this.cops[i];
       if (o === c) continue;
       const sx = px - o.position.x, sz = pz - o.position.z, sd = Math.hypot(sx, sz);
       if (sd < 1.3 && sd > 0.01) { vx += sx / sd * 1.5; vz += sz / sd * 1.5; }
@@ -565,7 +608,8 @@ export class Police {
       if (ai.wp && (Math.hypot(ai.wp.x - px, ai.wp.z - pz) < 2.5 || ai.wpT <= 0)) ai.wp = null;
       if (!ai.wp) {
         const path = sidewalkPath(nearestNode(px, pz), nearestNode(pp.x, pp.z));
-        const wp = path && path.map(nodePos).find(p => Math.hypot(p.x - px, p.z - pz) > 2.5);
+        let wp = null;
+        if (path) for (let i = 0; i < path.length; i++) { const q = nodePos(path[i]); if (Math.hypot(q.x - px, q.z - pz) > 2.5) { wp = q; break; } }
         if (wp) { ai.wp = wp; ai.wpT = 8; }
       }
       if (ai.wp) { t.x = ai.wp.x; t.z = ai.wp.z; }
@@ -592,7 +636,8 @@ export class Police {
   _tracer(x0, y0, z0, x1, y1, z1) {
     const scene = this.game.scene;
     if (!scene) return;
-    let t = this.tracers.find(o => o.life <= 0);
+    let t = null;
+    for (let i = 0; i < this.tracers.length; i++) if (this.tracers[i].life <= 0) { t = this.tracers[i]; break; }
     if (!t) {
       if (this.tracers.length >= 16) return;
       const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
@@ -607,17 +652,19 @@ export class Police {
     t.line.visible = true; t.life = 0.09;
   }
   _updateTracers(dt) {
-    for (const t of this.tracers) if (t.life > 0) { t.life -= dt; if (t.life <= 0) t.line.visible = false; }
+    for (let i = 0; i < this.tracers.length; i++) { const t = this.tracers[i]; if (t.life > 0) { t.life -= dt; if (t.life <= 0) t.line.visible = false; } }
   }
 
   // ---------- evasion & busting ----------
   _evasion(dt, pp) {
     let seen = false;
-    for (const c of this.cops) {
+    for (let i = 0; i < this.cops.length; i++) {
+      const c = this.cops[i];
       const d = Math.hypot(c.position.x - pp.x, c.position.z - pp.z);
       if (d < 80 && (c.cop?.los ?? this.grid.lineClear(c.position.x, c.position.z, pp.x, pp.z))) { seen = true; break; }
     }
-    if (!seen) for (const c of this.cars) {
+    if (!seen) for (let i = 0; i < this.cars.length; i++) {
+      const c = this.cars[i];
       if (c.state === 'parked') continue;
       const p = c.vehicle.position, d = Math.hypot(p.x - pp.x, p.z - pp.z);
       if (d < 80 && this.grid.lineClear(p.x, p.z, pp.x, pp.z)) { seen = true; break; }
@@ -635,7 +682,7 @@ export class Police {
     const g = this.game;
     const ok = this.wanted >= 1 && this.wanted <= 2 && this.bustCd <= 0 && !g.player?.vehicle && this.pSpeed < 3 && g.player?.alive !== false;
     let near = false;
-    if (ok) for (const c of this.cops) if (Math.hypot(c.position.x - pp.x, c.position.z - pp.z) < 2) { near = true; break; }
+    if (ok) for (let i = 0; i < this.cops.length; i++) { const c = this.cops[i]; if (Math.hypot(c.position.x - pp.x, c.position.z - pp.z) < 2) { near = true; break; } }
     if (near) this.bustT += dt; else this.bustT = Math.max(0, this.bustT - dt * 2);
     if (this.bustT >= 3) {
       this.bustT = 0; this.bustCd = 6;
@@ -658,14 +705,16 @@ export class Police {
       const p = c.vehicle.position, dx = p.x - pp.x, dz = p.z - pp.z, d = Math.hypot(dx, dz) || 1;
       if (c.state === 'leave') {
         const k = this.heatLeaveTarget(c, pp);
-        this._drive(c, dt, k.x, k.z, { aggressive: false, slowNear: false });
+        const o = this._opt; o.aggressive = false; o.slowNear = false; o.avoid = false;
+        this._drive(c, dt, k.x, k.z, o);
         if (d > 140 || (c.leaveT > 25 && !inView(this.game, p.x, p.z))) this._removeCar(c);
       } else if (c.leaveT > 25 && d > 40 && !inView(this.game, p.x, p.z)) this._removeCar(c);
       else c.leaveT += 0;
     }
   }
-  heatLeaveTarget(c, pp) {
-    const p = c.vehicle.position;
-    return { x: p.x + (p.x - pp.x), z: p.z + (p.z - pp.z) };
+  heatLeaveTarget(c, pp) {     // writes into a reused object
+    const p = c.vehicle.position, t = this._lt;
+    t.x = p.x + (p.x - pp.x); t.z = p.z + (p.z - pp.z);
+    return t;
   }
 }

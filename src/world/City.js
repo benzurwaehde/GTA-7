@@ -7,6 +7,12 @@ import { treeGeo, palmGeo, lampPoleGeo, lampHeadGeo } from './props.js';
 import { Signals } from './signals.js';
 import { Shops } from './shops.js';
 import { buildFurniture } from './furniture.js';
+import { COAST, groundHeight } from './coast.js';
+import { Sea } from './water.js';
+import { Harbor } from './harbor.js';
+import { Landmarks } from './landmarks.js';
+import { buildRoofDetails } from './roofs.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 const H = CITY.half;
 const SW = CITY.sidewalk;
@@ -31,6 +37,14 @@ const PALETTES = {
 };
 const ROOFS = [0x6d7075, 0x5e6368, 0x7a6f66, 0x4f5459];
 const HOUSE_ROOFS = [0x9a4a38, 0x6c4a3a, 0x58606a, 0x7a3e2e];
+// Extra wall colours for the outskirts (picked with a separate RNG, so the city layout stays the same)
+const OUTSKIRT_COLORS = {
+  north: [0xf2e6c8, 0xdcc4a0, 0xc9d8b8, 0xeed0c0, 0xb8cfd8, 0xe8dcc0],
+  south: [0xd8d0b8, 0xb8c4cc, 0xcfc4ae, 0xb2b8a8, 0xc8b8a8],
+  east: [0xff9fb4, 0x8fe0cc, 0xffe08a, 0x9fd0f4, 0xffb88a, 0xd8a0ee, 0xf4f0a0],
+  west: [0xb86a50, 0x8a5a48, 0xc08a68, 0x6e747e, 0xa89480, 0x7a4a3c],
+  center: [0xd8dce2],
+};
 
 export function districtKey(x, z) {
   if (Math.max(Math.abs(x), Math.abs(z)) < 115) return 'center';
@@ -49,6 +63,8 @@ export class City {
     this.timeOfDay = 10;
     this.nightFactor = 0;
     this._rnd = mulberry32(7007);
+    this._rnd2 = mulberry32(31337); // for additions that must not shift the original layout
+    this._roofRects = [];
     this.group = new THREE.Group();
     this.group.name = 'world';
     game.scene.add(this.group);
@@ -57,10 +73,13 @@ export class City {
     game.renderer.toneMappingExposure = 1.05;
 
     this._buildMaterials();
+    this.landmarks = new Landmarks(this.group, this.colliders);
+    this.group.children.forEach((m) => { m.userData.t3 = 'landmark'; });
     this._buildTerrainAndRoads();
     this._buildBlocks();
     this._buildProps();
     this._buildDetails();
+    this._buildCoastDetails();
     this._buildBoundaries();
     this._buildSky();
     this._buildSea();
@@ -83,11 +102,11 @@ export class City {
       walk: std({ map: walk, vertexColors: true }),
       terrain: std({ map: terr, vertexColors: true }),
       roof: std({ vertexColors: true, roughness: 0.9 }),
-      facade: [0, 1, 2].map((s) => {
+      facade: Array.from({ length: TX.FACADE_STYLES }, (_, s) => {
         const f = TX.makeFacade(s, mulberry32(500 + s), a);
         return new THREE.MeshStandardMaterial({
           map: f.map, emissiveMap: f.emissive, emissive: 0xffffff, emissiveIntensity: 0,
-          vertexColors: true, roughness: s === 0 ? 0.45 : 0.85, metalness: s === 0 ? 0.15 : 0,
+          vertexColors: true, roughness: s === 0 ? 0.45 : s === 3 ? 0.7 : 0.85, metalness: s === 0 ? 0.15 : s === 3 ? 0.08 : 0,
         });
       }),
       foliage: std({ vertexColors: true, roughness: 0.9 }),
@@ -104,16 +123,21 @@ export class City {
   // ---------------------------------------------------------------- terrain + roads
   _buildTerrainAndRoads() {
     const terrain = this._terrainGB = new GB();
-    const xs = [-(H + 90), -(H + 55), -(H + 12), (H + 12), (H + 55), (H + 90)];
-    const hgt = (x, z) => { const d = Math.max(Math.abs(x), Math.abs(z)); return d <= H + 55 ? 0 : -(d - (H + 55)) / 35 * 1.8; };
-    const grass = rgb(0x5b9a45), sand = rgb(0xe3d29a);
+    // Ground: city plate, grass / sand ring and a beach that slopes under the sea (profile in coast.js).
+    // Breakpoints are mirrored, so the grid has a cell edge at every change of slope or colour.
+    const R = [H + 90, H + 60, H + 36, H + 31, H + 27, H + 20, H + 12];
+    const xs = [...R.map((v) => -v), ...R.slice().reverse()];
+    const hgt = (x, z) => groundHeight(Math.max(Math.abs(x), Math.abs(z)));
+    const grass = rgb(0x5b9a45), sand = rgb(0xe3d29a), wet = rgb(0xb9a878), bed = rgb(0x9c9468), deep = rgb(0x6f7a68);
     for (let a = 0; a < xs.length - 1; a++) for (let b = 0; b < xs.length - 1; b++) {
       const x0 = xs[a], x1 = xs[a + 1], z0 = xs[b], z1 = xs[b + 1];
       const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
-      const isSand = cx > H + 12 || cz > H + 12 || Math.abs(cx) > H + 55 || Math.abs(cz) > H + 55;
+      const dc = Math.max(Math.abs(cx), Math.abs(cz));
+      const isSand = cx > H + 12 || cz > H + 12 || dc > H + 20;
+      const col = dc > H + 60 ? deep : dc > H + 31 ? bed : dc > H + 27 ? wet : isSand ? sand : grass;
       const P = (x, z) => [x, hgt(x, z), z];
       terrain.quad(P(x0, z0), P(x1, z0), P(x1, z1), P(x0, z1),
-        [[x0 / 10, z0 / 10], [x1 / 10, z0 / 10], [x1 / 10, z1 / 10], [x0 / 10, z1 / 10]], isSand ? sand : grass, [cx, -5, cz]);
+        [[x0 / 10, z0 / 10], [x1 / 10, z0 / 10], [x1 / 10, z1 / 10], [x0 / 10, z1 / 10]], col, [cx, -5, cz]);
     }
 
     // roads
@@ -155,7 +179,7 @@ export class City {
   _buildBlocks() {
     const rnd = this._rnd;
     const walkGB = this._walkGB = new GB();
-    const facades = this._facadeGB = [new GB(), new GB(), new GB()];
+    const facades = this._facadeGB = Array.from({ length: TX.FACADE_STYLES }, () => new GB());
     const roofGB = this._roofGB = new GB();
     const terrain = this._terrainGB, asph = this._asphGB, marks = this._marksGB;
     this._parks = []; this._yardSpots = []; this._lotsForTrees = []; this._shopSpecs = [];
@@ -215,9 +239,17 @@ export class City {
       if (tier === 0 && Math.abs((x0 + x1) / 2) < 70 && Math.abs((z0 + z1) / 2) < 70) floors += 6 + ((rnd() * 8) | 0);
       if (dk === 'south' && tier >= 2) floors = Math.min(floors, 4);
     }
-    const style = house ? 1 : tier === 0 ? (rnd() < 0.75 ? 0 : 2) : tier === 1 ? [0, 1, 2][(rnd() * 3) | 0] : (dk === 'south' || dk === 'west' ? 2 : 1);
-    const wallCol = tint(pal[(rnd() * pal.length) | 0], rnd, 0.06);
+    let style = house ? 1 : tier === 0 ? (rnd() < 0.75 ? 0 : 2) : tier === 1 ? [0, 1, 2][(rnd() * 3) | 0] : (dk === 'south' || dk === 'west' ? 2 : 1);
+    let wallCol = tint(pal[(rnd() * pal.length) | 0], rnd, 0.06);
     const uoff = rnd();
+    // outskirts variety (separate RNG, so the layout above stays identical): industrial ribbon-window facades in the
+    // south and west, narrow-window apartment blocks elsewhere, and a wider colour range
+    if (tier >= 2) {
+      const r2 = this._rnd2, v = r2();
+      if (!house && v < 0.5) style = (dk === 'south' || dk === 'west') ? 3 : 4;
+      else if (house && v < 0.25) style = 4;
+      if (r2() < 0.6) { const oc = OUTSKIRT_COLORS[dk]; wallCol = tint(oc[(r2() * oc.length) | 0], r2, 0.05); }
+    }
     const h = floors * 3;
     const F = this._facadeGB[style];
     F.box(x0, SLAB, z0, x1, SLAB + h, z1, wallCol, { mode: 'facade', uoff, top: false });
@@ -233,6 +265,9 @@ export class City {
     } else {
       const rc = tint(ROOFS[(rnd() * ROOFS.length) | 0], rnd, 0.1);
       R.box(x0 - 0.15, top, z0 - 0.15, x1 + 0.15, top + 0.4, z1 + 0.15, rc, { mode: 'world' });
+      this._parapet(R, x0 - 0.15, z0 - 0.15, x1 + 0.15, z1 + 0.15, top + 0.4, rc);
+      const roof = [x0, z0, x1, z1, top + 0.4]; // updated below when the building has setback tiers
+      this._roofRects.push(roof);
       // roof clutter
       const nUnits = (rnd() * 4) | 0;
       for (let k = 0; k < nUnits; k++) {
@@ -254,6 +289,8 @@ export class City {
           // base cap hides the tier seam
           ty += hh;
           R.box(tx0 - 0.15, ty, tz0 - 0.15, tx1 + 0.15, ty + 0.4, tz1 + 0.15, rc, { mode: 'world' });
+          this._parapet(R, tx0 - 0.15, tz0 - 0.15, tx1 + 0.15, tz1 + 0.15, ty + 0.4, rc);
+          roof[0] = tx0; roof[1] = tz0; roof[2] = tx1; roof[3] = tz1; roof[4] = ty + 0.4;
           if (this.colliders.length) this.colliders[this.colliders.length - 1].maxY = ty;
         }
         const ax = (tx0 + tx1) / 2, az = (tz0 + tz1) / 2, ah = rr(8, 24);
@@ -262,6 +299,14 @@ export class City {
         this._beacons = this._beacons || []; this._beacons.push([ax, ty + 0.4 + ah + 0.3, az]);
       }
     }
+  }
+
+  // Low rim around a flat roof (four thin boxes, merged into the roof mesh).
+  _parapet(R, x0, z0, x1, z1, y, base) {
+    const c = [Math.min(1, base[0] * 1.25 + 0.04), Math.min(1, base[1] * 1.25 + 0.04), Math.min(1, base[2] * 1.25 + 0.04)];
+    const t = 0.32, h = y + 0.75, o = { mode: 'world' };
+    R.box(x0, y, z0, x1, h, z0 + t, c, o); R.box(x0, y, z1 - t, x1, h, z1, c, o);
+    R.box(x0, y, z0 + t, x0 + t, h, z1 - t, c, o); R.box(x1 - t, y, z0 + t, x1, h, z1 - t, c, o);
   }
 
   _gable(F, R, x0, z0, x1, z1, y, rh, alongX, rc, wallCol, uoff) {
@@ -300,7 +345,18 @@ export class City {
       trees.push([x, z]);
     }
     this._treeSpots = this._treeSpots || []; this._palmSpots = this._palmSpots || [];
-    for (const [x, z] of trees) (rnd() < 0.2 ? this._palmSpots : this._treeSpots).push([x, z]);
+    // landmarks (fixed placement, no RNG): Meridian Tower in the central plaza park, pavilion in the first pond-free north park
+    const tower = Math.abs(cx + 37) < 1 && Math.abs(cz - 37) < 1;
+    const pav = !tower && !pond && !this._pavilion && districtKey(cx, cz) === 'north';
+    if (tower) this._walkGB.flat(cx - 14, cz - 14, cx + 14, cz + 14, SLAB + 0.06, [0.78, 0.78, 0.75], 0.25); // stone plaza hides park paths under the tower
+    if (tower) this._towerBeacon = this.landmarks.buildTower(this._facadeGB[0], this._roofGB, cx, cz);
+    if (pav) { this._pavilion = true; this.landmarks.addPavilion(cx, cz); }
+    for (const [x, z] of trees) {
+      const palm = rnd() < 0.2; // keep the RNG sequence identical to the original layout
+      if (tower && Math.abs(x - cx) < 15 && Math.abs(z - cz) < 15) continue;
+      if (pav && Math.hypot(x - cx, z - cz) < 8) continue;
+      (palm ? this._palmSpots : this._treeSpots).push([x, z]);
+    }
   }
 
   _buildParking(ix0, iz0, ix1, iz1, cx, cz) {
@@ -370,14 +426,15 @@ export class City {
     for (let n = 0; n < 90; n++) {
       const east = rnd() < 0.5, along = (rnd() * 2 - 1) * (H + 40), out = H + 16 + rnd() * 30;
       const x = east ? out : along, z = east ? along : out;
-      if (Math.abs(x) > H + 46 || Math.abs(z) > H + 46) continue;
+      if (Math.abs(x) > H + 25 || Math.abs(z) > H + 25) continue; // the beach ends at the sea (see coast.js)
+      if (this._beachBlocked(x, z)) continue;
       this._palmSpots.push([x, z]);
     }
     // city-edge trees
     for (let n = 0; n < 60; n++) {
       const side = (rnd() * 4) | 0, along = (rnd() * 2 - 1) * (H + 10), out = H + 5 + rnd() * 25;
       const x = side < 2 ? (side ? out : -out) : along, z = side < 2 ? along : (side === 2 ? out : -out);
-      if (z > H + 14 || x > H + 14) continue;
+      if (z > H + 14 || x > H + 14 || out > H + 22) continue;
       this._treeSpots.push([x, z]);
     }
     const mk = (geo, spots, scaleMin, scaleMax, colliderR) => {
@@ -413,6 +470,8 @@ export class City {
     const glows = new THREE.InstancedMesh(new THREE.PlaneGeometry(30, 30).rotateX(-Math.PI / 2), this.mat.glow, n);
     const d = new THREE.Object3D();
     lamps.forEach(([x, z, dx, dz], k) => {
+      // small collider per pole (low, so the camera and the police line-of-sight ignore it)
+      this.colliders.push({ minX: x - 0.2, maxX: x + 0.2, minZ: z - 0.2, maxZ: z + 0.2, maxY: 1.9, type: 'lamp' });
       d.position.set(x, SLAB, z); d.rotation.set(0, Math.atan2(-dz, dx), 0); d.scale.set(1, 1, 1); d.updateMatrix();
       poles.setMatrixAt(k, d.matrix); heads.setMatrixAt(k, d.matrix);
       d.position.set(x + dx * 1.3, SLAB + 0.05, z + dz * 1.3); d.rotation.set(0, 0, 0); d.updateMatrix();
@@ -434,21 +493,33 @@ export class City {
   // Traffic light contract: 'green' | 'yellow' | 'red' | null (no signal within 25 m). axis 'ns' = along Z, 'ew' = along X.
   signalAt(x, z, axis) { return this.signals.signalAt(x, z, axis); }
 
+  // True where a beach palm would stand on the pier, boardwalk, quay or a landmark (south coast).
+  _beachBlocked(x, z) {
+    if (z <= H + 7) return false;
+    return Math.abs(x) < 8 || (z > H + 19 && x < 156) || Math.abs(x + 48) < 14 || Math.abs(x - 205) < 14;
+  }
+
+  // Harbour (pier, boardwalk, quay, cranes, ship, boats) and the landmarks that need the finished geometry.
+  _buildCoastDetails() {
+    const before = this.group.children.length;
+    this.harbor = new Harbor(this.group, this.colliders);
+    this.group.children.slice(before).forEach((m) => { m.userData.t3 = 'harbor'; }); // tag for draw-call accounting in tests
+  }
+
+  // Invisible walls just inside the water line. The south wall has gaps for the pier channel and the quay.
   _buildBoundaries() {
-    const e = H + 50, t = 30, big = e + t + 50;
+    const e = COAST.wall, t = 30, big = e + t + 50;
     const add = (minX, maxX, minZ, maxZ) => this.colliders.push({ minX, maxX, minZ, maxZ, maxY: 100, type: 'boundary', invisible: true });
-    add(-big, big, -e - t, -e); add(-big, big, e, e + t); add(-e - t, -e, -big, big); add(e, e + t, -big, big);
+    add(-big, big, -e - t, -e); add(-e - t, -e, -big, big); add(e, e + t, -big, big);
+    const s = 4;                      // thickness of the south wall pieces (walkers and cars are slow enough)
+    add(-big, -4.6, e, e + s);         // west of the pier channel
+    add(4.6, 36, e, e + s);            // between the pier and the quay
+    add(152, big, e, e + s);           // east of the quay
   }
 
   _buildSea() {
-    const g = new THREE.PlaneGeometry(5000, 5000).rotateX(-Math.PI / 2);
-    const nm = this._waterNormal; nm.repeat.set(220, 220);
-    this._sea = new THREE.Mesh(g, new THREE.MeshPhongMaterial({
-      color: 0x1d7fa6, specular: 0xffffff, shininess: 120, normalMap: nm, normalScale: new THREE.Vector2(0.5, 0.5),
-      transparent: true, opacity: 0.93,
-    }));
-    this._sea.position.y = -0.7; this._sea.receiveShadow = false;
-    this.group.add(this._sea);
+    this.sea = new Sea(this._waterNormal);
+    this.group.add(this.sea.mesh);
   }
 
   _buildSky() {
@@ -491,7 +562,12 @@ export class City {
     add(this._terrainGB, this.mat.terrain, false, true);
     add(this._walkGB, this.mat.walk, false, true);
     this._facadeGB.forEach((gb, s) => add(gb, this.mat.facade[s], true, true));
-    add(this._roofGB, this.mat.roof, true, true);
+    // roof mesh = parapets / clutter / tiers + instanced-style roof details (AC units, tanks, antennas), one draw call
+    if (!this._roofGB.empty) {
+      const extra = buildRoofDetails(this._roofRects), base = this._roofGB.build();
+      const m = new THREE.Mesh(extra ? mergeGeometries([base, extra]) : base, this.mat.roof);
+      m.castShadow = true; m.receiveShadow = true; m.frustumCulled = false; this.group.add(m);
+    }
   }
 
   // ---------------------------------------------------------------- lighting / time
@@ -535,19 +611,35 @@ export class City {
     for (const s of this._signs || []) s.material.emissiveIntensity = 0.35 + night * 0.9;
     for (const bm of this._beams || []) bm.material.opacity = 0.14 + night * 0.18;
     this.shops?.update(night);
-    this._sea.material.color.set(0x1d7fa6).multiplyScalar(0.25 + 0.75 * dayF);
-    this._sea.material.specular.set(0xffffff).multiplyScalar(0.3 + 0.7 * (above ? 1 : 0.3));
-    this._sea.material.emissive.set(0x0a2a3a).multiplyScalar(night * 0.4);
+    this.sea.setEnv({ top: this._top, hor: this._hor, sun: sd, night, light: Math.max(dayF, night * 0.18) });
   }
 
   update(dt) {
     this.timeOfDay = (this.timeOfDay + dt / 60) % 24;
-    this._waterNormal.offset.x += dt * 0.004; this._waterNormal.offset.y += dt * 0.0025;
+    this.sea.update(dt, this.game.camera?.position);
     this._applyTime();
+    this.harbor.update(dt, this.nightFactor);
+    this.landmarks.update(dt, this.nightFactor);
     this.signals.update(dt, this.nightFactor);
   }
 
   // ---------------------------------------------------------------- queries
+  // ---- walking limits and ground height (coast, pier, quay)
+  // playLimit: max |x| / |z| for walking on land (beach ends here, a bit before the water line).
+  get playLimit() { return COAST.shore - 0.5; }
+  // isWalkable(x, z): true on land inside playLimit and on the pier / T-head / quay (they reach into the sea).
+  isWalkable(x, z) {
+    return Math.max(Math.abs(x), Math.abs(z)) <= this.playLimit || !!this.harbor?.deckHeightAt(x, z, true);
+  }
+  // groundAt(x, z): ground height in metres. Land and beach: slope profile (0 on flat ground, down to about -0.5 at the
+  // play limit). Pier deck 0.06, quay deck 0.03. Anywhere else past the play limit (water): null (cannot stand there).
+  groundAt(x, z) {
+    const deck = this.harbor?.deckHeightAt(x, z);
+    if (deck !== null && deck !== undefined) return deck;
+    const d = Math.max(Math.abs(x), Math.abs(z));
+    return d <= this.playLimit ? groundHeight(d) : null;
+  }
+
   getSpawnPoint() { return { x: 8.5, z: 20 }; }
 
   districtAt(x, z) {

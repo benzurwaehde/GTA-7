@@ -3,6 +3,7 @@
 // and a ped costs 5 draw calls (upper body, 2 arms, 2 legs).
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { Human, humanAvailable } from '../characters/Human.js';
 
 const SKIN = [0xf1c8a5, 0xe0ac86, 0xc68a62, 0x8d5a3b, 0x5e3a24, 0xf6d7b8];
 const SHIRT = [0xd9453b, 0x2f7fd1, 0x39a85a, 0xe8c33a, 0x8d4fc2, 0xf0f0f0, 0xe07b2c, 0x2c2c34, 0x2fb8b0, 0xd96aa0];
@@ -102,7 +103,32 @@ function makeLeg(o) {
 
 const pick = a => a[Math.floor(Math.random() * a.length)];
 
+const CIV_MODELS = ['human_man_a', 'human_man_b', 'human_man_suit', 'human_woman_a', 'human_woman_casual', 'human_woman_dress', 'human_woman_tank'];
+const COP_LOOK = { shirt: 0x1c3f94, pants: 0x151f3a, hair: 0x1c1410 };
+const HAIR_G = [0x1c1410, 0x2a1a12, 0x3a2418, 0x6b4a2a, 0xc9a24a, 0x9a3b22, 0x8a8a8a];
+const SHIRT_G = [0xd9453b, 0x2f7fd1, 0x39a85a, 0xe8c33a, 0x8d4fc2, 0xf0f0f0, 0xe07b2c, 0x2c2c34, 0x2fb8b0, 0xd96aa0];
+const PANTS_G = [0x2a3550, 0x3b3b3b, 0x6a5a45, 0x1d2a44, 0x7a7f8c, 0x4a3a2a];
+// Few distinct outfit combos per model so the outfit materials stay shared.
+function humanLook(kind) {
+  if (kind === 'cop') return { ...COP_LOOK, skin: pick(SKIN.slice(0, 4)) };
+  return { shirt: pick(SHIRT_G), pants: pick(PANTS_G), hair: pick(HAIR_G), skin: pick(SKIN) };
+}
+
 export function buildPedMesh(kind = 'civ') {
+  const model = kind === 'cop' ? 'human_cop' : pick(CIV_MODELS);
+  if (humanAvailable(model)) {
+    const h = new Human(model, humanLook(kind));
+    const g = h.root;
+    g.rotation.order = 'YXZ';
+    g.scale.setScalar(0.96 + Math.random() * 0.08);
+    h.play('idle'); h.mixer.setTime(Math.random() * 1.5);
+    g.userData = { human: h, keys: null };
+    return g;
+  }
+  return buildProcedural(kind);
+}
+
+function buildProcedural(kind) {
   const g = new THREE.Group();
   g.rotation.order = 'YXZ';
   const cop = kind === 'cop';
@@ -138,6 +164,8 @@ export function buildPedMesh(kind = 'civ') {
 
 // Called when a ped is removed: frees geometry no other ped uses.
 export function releasePedMesh(mesh) {
+  const h = mesh?.userData?.human;
+  if (h) { h.mixer.stopAllAction(); h.mixer.uncacheRoot(h.model); mesh.userData.human = null; return; }
   const k = mesh?.userData?.keys;
   if (!k) return;
   const seen = k.slice(0, 1).concat(k[1], k[3]); // arms/legs are acquired once per ped

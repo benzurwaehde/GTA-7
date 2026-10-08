@@ -20,3 +20,11 @@ Fünf Sonnet-Teams, organisiert nach dem Unternehmens-Ablauf: Agent baut, Mitarb
 - Straße: vielfältige Passanten mit Armen, Ampelquerung, Zurückschlagen, Polizei auf der Spur mit Ausweichen, Straßensperren ab 4★, neue Sounds.
 - Kern (Chef): rechte Maustaste und Mausrad, GLB-Preloader, QA-Tour, `tools/heavy.sh`. Integrationsfix: `owned` gilt auch für NPC-Autos.
 - QA: Build ✅, Smoke ✅ (190 Draw Calls), QA-Tour ✅ (159 Draw Calls).
+
+## Sprint 3 — "Mehr GTA" ✅ (2026-10-08)
+Vier Teams nach dem Unternehmens-Ablauf. Details stehen in `unternehmen/sprint-3-gta/`.
+- Menschen: Quaternius-CC0-Figuren mit Animationen, Verlet-Ragdoll (GTA-artiges Umfallen, Explosionen und Unfälle), Blut, Treffer-Reaktion, Zweihand-Haltung.
+- Waffen: Schrotflinte, Sturmgewehr, Scharfschütze, Granaten mit Blender-Modellen, Waffenrad mit Zeitlupe, Laden „Bullseye Arms“, Einschusslöcher, neue Zielkamera.
+- Stadt: Meer mit Wellen und Schaum, begehbarer Hafen (Steg, Kai, Kräne, Frachtschiff, Boote), Meridian Tower, Riesenrad, Leuchtturm, Pavillon, Dachdetails.
+- Fahrzeuge: Muscle-Car, Van, Bus, Motorrad, Schadensbild bis zum Wrack, Polizeihubschrauber ab 5★, Verkehr macht Sirenen Platz.
+- Kern und Chef: `game.timeScale`, Mac-App (Electron), Integration. QA: Build ✅, Smoke ✅ (199 Draw Calls), QA-Tour ✅.

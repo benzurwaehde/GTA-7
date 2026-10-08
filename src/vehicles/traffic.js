@@ -7,6 +7,8 @@ export const LANE = CITY.roadWidth / 4;          // lane center offset from road
 const CURB = CITY.roadWidth / 2 - 1.3;           // parked-car lateral offset
 const EDGE = CITY.half - 12;
 const rnd = (a, b) => a + Math.random() * (b - a);
+const _ctl = { throttle: 0, steer: 0, brake: 0, handbrake: false };   // reused control object (no allocation per car per frame)
+const YIELD_RANGE = 55, YIELD_HOLD = 2.5;
 
 export const laneOffset = (axis, dir) => (axis === 0 ? -dir * LANE : dir * LANE);
 export const headingOf = (axis, dir) => (axis === 0 ? (dir > 0 ? 0 : Math.PI) : (dir > 0 ? Math.PI / 2 : -Math.PI / 2));
@@ -81,7 +83,7 @@ export function pickCurbPoint(game, px, pz, minD, maxD) {
 // --- AI ---
 export function initAI(v) {
   const r = laneFromPose(v.position.x, v.position.z, v.heading);
-  v.ai = { ...r.st, wb: v.spec.wb, action: null, stuck: 0, blockT: 0, honkCd: Math.random() * 3, factor: rnd(0.85, 1.15), remove: false, reverseT: 0 };
+  v.ai = { ...r.st, wb: v.spec.wb, action: null, stuck: 0, blockT: 0, honkCd: Math.random() * 3, factor: rnd(0.85, 1.15), remove: false, reverseT: 0, yieldT: 0, ys: 0 };
 }
 
 function chooseAction(ai) {
@@ -138,7 +140,27 @@ export function driveNPC(v, dt, game, list, playerPos) {
   // pure pursuit steering
   const al = ai.axis === 0 ? pos.z : pos.x;
   const la = Math.max(5, Math.min(13, 4 + Math.abs(v.speed) * 0.5));
-  const tl = ROAD_LINES[ai.ri] + laneOffset(ai.axis, ai.dir);
+  // Emergency vehicles: while a police car with siren comes up from behind in our direction, ease towards the kerb
+  // and stop (but never stop inside a junction: roll through first). Holds a moment after the siren has passed.
+  let yielding = false;
+  const sirens = game.vehicles?.sirens;
+  if (sirens && sirens.length) {
+    const hx = Math.sin(v.heading), hz = Math.cos(v.heading);
+    for (let i = 0; i < sirens.length; i++) {
+      const o = sirens[i];
+      if (o === v) continue;
+      const dx = pos.x - o.position.x, dz = pos.z - o.position.z;
+      if (dx * dx + dz * dz > YIELD_RANGE * YIELD_RANGE) continue;
+      const ofx = Math.sin(o.heading), ofz = Math.cos(o.heading);
+      const ahead = dx * ofx + dz * ofz;                          // we are this far in front of the siren car
+      if (ahead < 1 || Math.abs(dx * -ofz + dz * ofx) > 9) continue;
+      if (ofx * hx + ofz * hz < 0.4) continue;                    // same direction of travel only
+      ai.yieldT = YIELD_HOLD; break;
+    }
+  }
+  if (ai.yieldT > 0) { ai.yieldT -= dt; yielding = true; }
+  ai.ys += ((yielding ? 1 : 0) - ai.ys) * Math.min(1, dt * 1.5);
+  const tl = ROAD_LINES[ai.ri] + laneOffset(ai.axis, ai.dir) * (1 + 0.16 * ai.ys);   // a little further right
   const tAlong = al + ai.dir * la;
   const tx = ai.axis === 0 ? tl : tAlong, tz = ai.axis === 0 ? tAlong : tl;
   const want = Math.atan2(tx - pos.x, tz - pos.z);
@@ -152,6 +174,12 @@ export function driveNPC(v, dt, game, list, playerPos) {
   if (slow) target = Math.min(target, 7);
   if (Math.abs(err) > 0.6) target = Math.min(target, 6);
   if (Math.abs(err) > 1.4) target = Math.min(target, 3.5);
+
+  if (yielding) {
+    const pi = ai.next - ai.dir, behind = pi >= 0 && pi < N ? Math.abs(al - ROAD_LINES[pi]) : 99;
+    const inJunction = toNext < 22 || behind < CITY.roadWidth / 2 + s.L / 2 + 3;
+    target = Math.min(target, inJunction ? 9 : 0);
+  }
 
   // traffic light: stop at the stop line on red/yellow; cars already past the line keep going.
   // game.world.signalAt may be missing (then old behaviour), and fleeing cars ignore lights.
@@ -237,5 +265,6 @@ export function driveNPC(v, dt, game, list, playerPos) {
     const d = playerPos ? Math.hypot(pos.x - playerPos.x, pos.z - playerPos.z) : 0;
     if (d < 70) game.audio?.play?.('horn', { x: pos.x, z: pos.z });
   }
-  v.setControls({ throttle, steer, brake, handbrake: false });
+  _ctl.throttle = throttle; _ctl.steer = steer; _ctl.brake = brake; _ctl.handbrake = false;
+  v.setControls(_ctl);
 }

@@ -95,3 +95,15 @@ Each system is a class `constructor(game)` with `update(dt)`. Update order = reg
 - `play(name, opts?)` one-shots: `'gunshot'|'smg'|'punch'|'explosion'|'horn'|'crash'|'pickup'|'mission'|'wasted'|'hit'`; optional `{x, z}` for distance attenuation.
 - Continuous: engine pitch from `game.player.vehicle.speed`, siren when any police car has `sirenOn` near the player, radio in car (R cycles procedural stations, off).
 - Sprint 2: `play('footstep'|'reload'|'empty')`; `hornStart()/hornStop()` (H held → sustained horn); pooled traffic engine hum (max 4 voices).
+
+## Sprint 3 additions
+- Core: `game.timeScale` (slow motion), `game.realDt` (unscaled frame time). Third-party assets allowed only CC0/CC-BY, listed in `CREDITS.md`.
+- Characters — `src/characters/` (Human, Ragdoll, Blood, surface): Quaternius CC0 humans (`human_*.glb`, shared 31-bone skeleton). `surfaceY(x,z)` = walkable surface height (sidewalk slab, coast, pier).
+  - `character.rightHand` (Object3D, +Z along hand), `setWeaponStyle('pistol'|'rifle'|'none')` (rifle = two-handed IK), `setPose('aim'|'idle',{twoHanded})`, `update(dt,{speed,grounded,aiming,dying,vy,reload,pitch})`.
+  - `peds.damage(ped, amount, source, hit?)` with `hit={point,dir}`; `peds.kill(ped, source, vx,vy,vz)`; verlet ragdolls (max 8 active), `peds.useRagdoll`, `peds.ragdolls`; `game.blood.spray(point,dir,n,speed)`, `.puddle(x,z,size)`. Peds react to the `explosion` event.
+- Weapons — fists, pistol, smg, shotgun, rifle, sniper, grenade (`WEAPON_DEFS`, `owned`, `select/cycle/give/addAmmo/stateOf/defOf`). Keys: Tab = weapon wheel (`game.weaponWheel`, slow motion), 1–7 direct. `castRay` returns surface normal and `kind:'heli'`. Event `explosion {x,y,z,radius,source}`. Grenades check line of sight vs colliders.
+- Shop — `game.shop` ("Bullseye Arms"): `isOpen`, `position`, `getBlips()`, `open()/close()`; ownership persisted under `gta7.arms` (cleared by New Game).
+- World — sea shader (`world.sea`, `seaSurface(x,z,t,out)`), harbour (`world.harbor`), landmarks (`world.landmarks.list`), rooftop details. Walkability: `world.playLimit`, `world.isWalkable(x,z)` (land, pier, quay), `world.groundAt(x,z)` (null in water). New collider types `lamp, rail, crane, container, landmark`.
+- Vehicles — types `muscle, van, bus, bike` (+ sedan, sports, truck, taxi, police); damage (`dentAt`, `crackGlass`, charred wreck); `effects.explosion(x,y,z,paintHex?)`; traffic yields to sirens (`vehicles.sirens`).
+- Police helicopter at 5★ — `game.police.helicopter` (null if none): `hit(point,dmg)`, `rayHit(o,d,max)`, `hitRay(o,d,max,dmg)`, `blast(x,y,z,r,dmg)`, `hp`, `state`; event `helicopter:destroyed`.
+

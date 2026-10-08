@@ -1,7 +1,7 @@
 // Low-poly car models. Geometry is built once per type (merged, vertex-colored) and shared by all cars.
 // Source: Blender GLB (public/models/car_<type>.glb, see tools/blender/car_*.py) via getModel(); the procedural
 // boxes below stay as fallback when a GLB is missing.
-// Per car draw calls: body, headlights, taillights, front wheels, rear wheels (+2 for police light bar).
+// Per car draw calls: body, headlights, taillights, front wheels, rear wheels (+2 for police light bar, +1 for a motorcycle rider).
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { getModel } from '../core/assets.js';
@@ -13,7 +13,16 @@ export const SPECS = {
   truck:  { L: 5.4, W: 2.05, top: 26, accel: 9,  brake: 24, grip: 7,  maxSteer: 0.5,  steerSpeed: 13, mass: 2300, wheelR: 0.5,  wb: 3.4, cruise: 0.5 },
   taxi:   { L: 4.5, W: 1.85, top: 34, accel: 15, brake: 30, grip: 9,  maxSteer: 0.55, steerSpeed: 15, mass: 1300, wheelR: 0.34, wb: 2.7, cruise: 0.45 },
   police: { L: 4.7, W: 1.9,  top: 43, accel: 21, brake: 34, grip: 10, maxSteer: 0.55, steerSpeed: 17, mass: 1500, wheelR: 0.35, wb: 2.8, cruise: 0.45 },
+  muscle: { L: 4.9, W: 1.96, top: 46, accel: 22, brake: 34, grip: 8,  maxSteer: 0.48, steerSpeed: 17, mass: 1700, wheelR: 0.36, wb: 2.95, cruise: 0.42 },
+  van:    { L: 5.5, W: 2.05, top: 29, accel: 11, brake: 26, grip: 8,  maxSteer: 0.5,  steerSpeed: 14, mass: 2000, wheelR: 0.38, wb: 3.3, cruise: 0.45 },
+  bus:    { L: 8.6, W: 2.6,  top: 22, accel: 6,  brake: 20, grip: 6,  maxSteer: 0.42, steerSpeed: 11, mass: 9000, wheelR: 0.5,  wb: 5.3, cruise: 0.5 },
+  // Motorcycle: one wheel per axle, leans into curves (lean > 0), light and fragile. Steering is tamer than a car's because
+  // wb is short.
+  bike:   { L: 2.1, W: 0.75, top: 44, accel: 20, brake: 30, grip: 14, maxSteer: 0.38, steerSpeed: 12, mass: 220, wheelR: 0.32, wb: 1.8, cruise: 0.45, lean: 1, health: 60 },
 };
+// Types with a fixed paint job (everything else gets a random one) and GLB names that do not follow car_<type>.
+export const FIXED_PAINT = { taxi: 0xf2c200, bus: 0x2b7bb9 };
+const MODEL_KEY = { bike: 'vehicle_bike' };
 
 export const PAINTS = [0xc0392b, 0x2980b9, 0x27ae60, 0xecf0f1, 0x2c3e50, 0x8e44ad, 0xe67e22, 0x7f8c8d, 0x16a085, 0xd35400, 0xff3d7f, 0x1abc9c, 0xb8c1c8, 0x34495e];
 
@@ -33,12 +42,12 @@ class Builder {
     for (let i = 0; i < n; i++) { a[i * 3] = c.r; a[i * 3 + 1] = c.g; a[i * 3 + 2] = c.b; }
     g.setAttribute('color', new THREE.BufferAttribute(a, 3));
   }
-  build() { return mergeGeometries(this.parts, false); }
+  build() { const g = mergeGeometries(this.parts, false); return g.index ? g.toNonIndexed() : g; }   // non-indexed: damage.js shades per face
 }
 
 function wheelPair(r, track, width = 0.26) {
   const b = new Builder();
-  for (const s of [-1, 1]) {
+  for (const s of track ? [-1, 1] : [0]) {
     const tire = new THREE.CylinderGeometry(r, r, width, 14);
     tire.rotateZ(Math.PI / 2); tire.translate(s * track, 0, 0);
     b.color(tire, 0x1a1a1c); b.parts.push(tire);
@@ -71,7 +80,7 @@ function bake(mesh, hex, offset) {
 function pathName(o) { let s = ''; for (let p = o; p; p = p.parent) s += (p.name || '') + '/'; return s; }
 
 function buildGeometriesGLB(type) {
-  const root = getModel('car_' + type);
+  const root = getModel(MODEL_KEY[type] ?? 'car_' + type);
   if (!root) return null;
   root.updateMatrixWorld(true);
   const r = SPECS[type].wheelR;
@@ -113,7 +122,28 @@ function buildGeometries(type) {
     body.box(W + 0.03, h, 0.22, 0, y, -L / 2 + 0.05, DARK);
   };
 
-  if (type === 'truck') {
+  if (type === 'bike') {
+    zf = 0.78; zr = -0.72; track = 0;
+    body.box(0.3, 0.36, 0.5, 0, 0.5, 0.05, DARK);              // engine
+    body.box(0.34, 0.26, 0.6, 0, 0.88, 0.2);                   // tank
+    body.box(0.28, 0.1, 0.72, 0, 0.88, -0.45, DARK);           // seat
+    body.box(0.7, 0.05, 0.05, 0, 1.08, 0.52, DARK);            // bars
+    body.box(0.05, 0.8, 0.05, 0, 0.66, 0.7, 0xaab0b6);         // fork
+    head.box(0.2, 0.2, 0.08, 0, 0.96, 0.74);
+    tail.box(0.14, 0.08, 0.05, 0, 0.84, -1.1);
+  } else if (type === 'van' || type === 'bus') {
+    const bus = type === 'bus';
+    zf = bus ? 2.9 : 1.75; zr = bus ? -2.4 : -1.55;
+    const H = bus ? 2.7 : 1.7;
+    body.box(W - 0.1, 0.3, L - 0.3, 0, 0.5, 0, DARK);
+    body.box(W, H, L, 0, 0.5 + H / 2, 0);
+    body.box(W + 0.02, bus ? 1.0 : 0.5, L * (bus ? 0.9 : 0.35), 0, bus ? 2.3 : 1.7, bus ? 0 : L * 0.3, GLASS);   // window band
+    bumper(0.3, 0.5);
+    for (const sx of [-1, 1]) {
+      head.box(0.36, 0.2, 0.06, sx * W * 0.32, 0.95, L / 2 + 0.01);
+      tail.box(0.2, 0.4, 0.06, sx * W * 0.4, 1.0, -L / 2 - 0.01);
+    }
+  } else if (type === 'truck') {
     zf = 1.9; zr = -1.5;
     body.box(W - 0.1, 0.25, L - 0.3, 0, 0.5, 0, DARK);
     body.box(W, 0.75, 1.3, 0, 0.93, 2.0);                 // hood
@@ -131,7 +161,7 @@ function buildGeometries(type) {
       head.box(0.4, 0.2, 0.06, sx * W * 0.32, 0.95, L / 2 + 0.01);
       tail.box(0.3, 0.22, 0.06, sx * W * 0.4, 1.05, -L / 2 - 0.01);
     }
-  } else if (type === 'sports') {
+  } else if (type === 'sports' || type === 'muscle') {
     zf = L * 0.3; zr = -L * 0.3;
     body.box(W - 0.1, 0.15, L - 0.3, 0, 0.35, 0, DARK);
     body.box(W, 0.45, L, 0, 0.6, 0);
@@ -172,7 +202,7 @@ function buildGeometries(type) {
   }
   const out = {
     body: body.build(), head: head.build(), tail: tail.build(),
-    wheelF: wheelPair(r, track), wheelR: wheelPair(r, track), zf, zr,
+    wheelF: wheelPair(r, track, type === 'bike' ? 0.16 : 0.26), wheelR: wheelPair(r, track, type === 'bike' ? 0.2 : 0.26), zf, zr,
   };
   if (type === 'police') {
     const red = new Builder().box(0.42, 0.14, 0.3, 0.27, 1.55, -0.2, WHITE);
@@ -182,6 +212,33 @@ function buildGeometries(type) {
   return out;
 }
 
+// Fallback rider for motorcycles (a simple blocky figure in a helmet), one merged vertex-coloured mesh. Built once.
+function buildRider() {
+  const parts = [];
+  const part = (w, h, d, x, y, z, rx, color) => {
+    const g = new THREE.BoxGeometry(w, h, d);
+    if (rx) g.rotateX(rx);
+    g.translate(x, y, z);
+    const c = new THREE.Color(color), n = g.attributes.position.count, a = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { a[i * 3] = c.r; a[i * 3 + 1] = c.g; a[i * 3 + 2] = c.b; }
+    g.setAttribute('color', new THREE.BufferAttribute(a, 3));
+    parts.push(g);
+  };
+  const JACKET = 0x2c3a52, PANTS = 0x22252b, HELMET = 0xe9e9e9;
+  part(0.4, 0.55, 0.26, 0, 1.2, -0.12, -0.45, JACKET);                  // torso, leaning forward
+  part(0.22, 0.24, 0.26, 0, 1.58, 0.06, 0, HELMET);                      // helmet
+  part(0.2, 0.1, 0.06, 0, 1.58, 0.2, 0, 0x10151c);                       // visor
+  for (const s of [-1, 1]) {
+    part(0.12, 0.12, 0.62, s * 0.15, 0.95, -0.2, 0.25, PANTS);           // thigh
+    part(0.11, 0.5, 0.12, s * 0.16, 0.62, 0.05, 0.2, PANTS);             // shin
+    part(0.1, 0.1, 0.55, s * 0.27, 1.2, 0.3, 0.55, JACKET);              // arm to the grips
+  }
+  const g = mergeGeometries(parts, false);
+  for (const p of parts) p.dispose();
+  return g;
+}
+let riderGeo = null;
+
 const bodyMats = new Map();
 export function paintMaterial(hex) {
   let m = bodyMats.get(hex);
@@ -189,6 +246,8 @@ export function paintMaterial(hex) {
   return m;
 }
 export const MATS = {
+  // burnt-out wreck: white base colour, the charcoal / rust comes from vertex colours (damage.js char())
+  charred: new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.96, metalness: 0 }),
   burnt: new THREE.MeshStandardMaterial({ color: 0x1c1c1c, vertexColors: true, roughness: 0.95, metalness: 0 }),
   wheel: new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.9 }),
   head: new THREE.MeshBasicMaterial({ color: 0xfff0b8, vertexColors: false }),
@@ -230,6 +289,11 @@ export function buildCarModel(type, paint) {
   };
   const wf = mk(g.wheelF, g.zf), wr = mk(g.wheelR, g.zr);
   const m = { root, chassis, body, head, tail, wheelFGroup: wf.grp, wheelF: wf.spin, wheelR: wr.spin, zr: g.zr };
+  if (SPECS[type].lean) {
+    m.rider = new THREE.Mesh(riderGeo || (riderGeo = buildRider()), MATS.wheel);
+    m.rider.castShadow = true; m.rider.visible = false;
+    chassis.add(m.rider);
+  }
   if (g.red) {
     m.red = new THREE.Mesh(g.red, MATS.redOff); m.blue = new THREE.Mesh(g.blue, MATS.blueOff);
     chassis.add(m.red, m.blue);

@@ -1,10 +1,36 @@
 import * as THREE from 'three';
-import { resolveCircleVsBoxes } from '../core/physics.js';
-import { SPECS, PAINTS, MATS, buildCarModel, paintMaterial } from './models.js';
+import { SPECS, PAINTS, FIXED_PAINT, MATS, buildCarModel } from './models.js';
+import { dent, breakGlass, char, disposeDamage } from './damage.js';
 
 const moveToward = (v, t, d) => (v < t ? Math.min(v + d, t) : Math.max(v - d, t));
 const _tmp = { x: 0, z: 0 };
 const _near = [];
+const _hit = { nx: 0, nz: 0 };
+
+// Allocation-free circle-vs-AABB push-out (same result as core/physics resolveCircleVsBoxes). Moves pos, fills _hit.
+function resolveCircle(pos, r, boxes) {
+  let hit = false;
+  for (let i = 0; i < boxes.length; i++) {
+    const b = boxes[i];
+    const cx = Math.max(b.minX, Math.min(pos.x, b.maxX)), cz = Math.max(b.minZ, Math.min(pos.z, b.maxZ));
+    const dx = pos.x - cx, dz = pos.z - cz, d2 = dx * dx + dz * dz;
+    if (d2 >= r * r) continue;
+    if (d2 > 1e-8) {
+      const d = Math.sqrt(d2), push = r - d;
+      pos.x += (dx / d) * push; pos.z += (dz / d) * push;
+      _hit.nx = dx / d; _hit.nz = dz / d;
+    } else {   // centre inside the box: leave along the shortest axis
+      const l = pos.x - b.minX + r, rr = b.maxX - pos.x + r, t = pos.z - b.minZ + r, bo = b.maxZ - pos.z + r;
+      const m = Math.min(l, rr, t, bo);
+      if (m === l) { pos.x -= l; _hit.nx = -1; _hit.nz = 0; }
+      else if (m === rr) { pos.x += rr; _hit.nx = 1; _hit.nz = 0; }
+      else if (m === t) { pos.z -= t; _hit.nx = 0; _hit.nz = -1; }
+      else { pos.z += bo; _hit.nx = 0; _hit.nz = 1; }
+    }
+    hit = true;
+  }
+  return hit;
+}
 
 // Arcade car. Steering convention: setControls({steer}) positive = turn RIGHT (D key), negative = left.
 export class Vehicle {
@@ -13,7 +39,7 @@ export class Vehicle {
     this.manager = manager;
     this.type = type;
     this.spec = SPECS[type];
-    const paint = type === 'taxi' ? 0xf2c200 : (opts.color ?? PAINTS[(Math.random() * PAINTS.length) | 0]);
+    const paint = FIXED_PAINT[type] ?? opts.color ?? PAINTS[(Math.random() * PAINTS.length) | 0];
     this.color = paint;
     this.model = buildCarModel(type, paint);
     this.mesh = this.model.root;
@@ -28,7 +54,7 @@ export class Vehicle {
     this.coff = this.spec.L / 2 - this.cr - 0.05; // collision circle offset from center
     this.mass = this.spec.mass;
     this.driver = opts.driver ?? null;
-    this.health = opts.health ?? 100;
+    this.health = opts.health ?? this.spec.health ?? 100;
     this.destroyed = false;
     this.isPolice = type === 'police';
     this.sirenOn = false;
@@ -36,6 +62,7 @@ export class Vehicle {
     this.owned = false;                           // player used it: never auto-despawn nearby
     this.sleeping = false;
     this.crashCd = 0; this.burnT = 0; this.hopV = 0;
+    this.glassBroken = false; this.fallT = 0; this.fallSide = 1;   // damage state; fallT > 0: motorcycle lying on its side
     this.ai = null;
     this.accel = 0; this.roll = 0; this.pitch = 0; this.wheelAngle = 0; this.braking = false;
     this.mesh.rotation.y = this.heading;
@@ -57,7 +84,8 @@ export class Vehicle {
   step(dt, boxes) {
     const s = this.spec, pos = this.position;
     let { throttle, steer, brake, handbrake: hb } = this.controls;
-    if (this.destroyed || this.driver === null) { throttle = 0; steer = 0; brake = 1; hb = true; }
+    if (this.fallT > 0) this.fallT -= dt;
+    if (this.destroyed || this.driver === null || this.fallT > 0) { throttle = 0; steer = 0; brake = 1; hb = true; }
 
     if (this.sleeping) {
       if (this.vx * this.vx + this.vz * this.vz < 0.01 && Math.abs(this.yawVel) < 0.02) { this.speed = 0; this.accel = 0; return; }
@@ -125,30 +153,40 @@ export class Vehicle {
       _near.push(b);
     }
     if (!_near.length) return;
-    let maxImpact = 0;
-    for (const k of [1, -1]) {
+    let maxImpact = 0, cx = 0, cz = 0;
+    for (let ki = 0; ki < 2; ki++) {      // front and rear collision circle
+      const k = ki === 0 ? 1 : -1;
       _tmp.x = pos.x + fx * this.coff * k; _tmp.z = pos.z + fz * this.coff * k;
       const ox = _tmp.x, oz = _tmp.z;
-      const hit = resolveCircleVsBoxes(_tmp, this.cr, _near);
-      if (!hit) continue;
+      if (!resolveCircle(_tmp, this.cr, _near)) continue;
       pos.x += _tmp.x - ox; pos.z += _tmp.z - oz;
-      const vn = this.vx * hit.nx + this.vz * hit.nz;
+      const nx = _hit.nx, nz = _hit.nz, vn = this.vx * nx + this.vz * nz;
       if (vn < 0) {
         const impact = -vn;
-        this.vx -= (1.2) * vn * hit.nx; this.vz -= (1.2) * vn * hit.nz;
+        this.vx -= (1.2) * vn * nx; this.vz -= (1.2) * vn * nz;
         this.vx *= 0.985; this.vz *= 0.985;
         // yaw kick from off-center contact
         const rX = fx * this.coff * k, rZ = fz * this.coff * k;
-        const jx = hit.nx * impact, jz = hit.nz * impact;
+        const jx = nx * impact, jz = nz * impact;
         this.yawVel = Math.max(-2.5, Math.min(2.5, this.yawVel + 0.35 * (jx * rZ - jz * rX) / 1.9));
-        if (impact > maxImpact) maxImpact = impact;
+        if (impact > maxImpact) { maxImpact = impact; cx = _tmp.x - nx * this.cr; cz = _tmp.z - nz * this.cr; }
       }
     }
     if (maxImpact > 0) {
       this.speed = this.vx * fx + this.vz * fz;
-      this.manager.registerImpact(this, null, maxImpact);
+      this.manager.registerImpact(this, null, maxImpact, cx, cz);
     }
   }
+
+  // ---- damage looks ------------------------------------------------------------------------
+  // World contact point -> dent in the body shell. amount = depth in metres.
+  dentAt(wx, wz, amount) {
+    if (this.destroyed || !(amount > 0.01)) return;
+    const dx = wx - this.position.x, dz = wz - this.position.z, sh = Math.sin(this.heading), ch = Math.cos(this.heading);
+    dent(this.model, dx * ch - dz * sh, dx * sh + dz * ch, amount, this.spec.W * 0.5 + 0.55);
+  }
+  crackGlass() { if (this.glassBroken || this.destroyed) return; this.glassBroken = true; breakGlass(this.model); }
+  disposeVisual() { disposeDamage(this.model); }
 
   // ---- visuals -----------------------------------------------------------------------------
   updateVisual(dt, time) {
@@ -157,11 +195,21 @@ export class Vehicle {
     this.wheelAngle += this.speed * dt / s.wheelR;
     m.wheelF.rotation.x = this.wheelAngle; m.wheelR.rotation.x = this.wheelAngle;
     m.wheelFGroup.rotation.y = -this.steerAngle;
-    const rollT = Math.max(-0.07, Math.min(0.07, -(this.yawRate || 0) * this.speed * 0.0035));
-    const pitchT = Math.max(-0.05, Math.min(0.05, -this.accel * 0.003));
-    const k = Math.min(1, dt * 8);
+    let rollT, pitchT;
+    if (s.lean) {
+      // motorcycle: leans INTO the curve (opposite of a car's body roll), rests on its stand when parked, lies down when fallen
+      rollT = Math.max(-0.5, Math.min(0.5, (this.yawRate || 0) * this.speed * 0.02));
+      if (this.fallT > 0 || this.destroyed) rollT = 1.4 * this.fallSide;
+      else if (this.driver === null) rollT = -0.2;
+      pitchT = Math.max(-0.12, Math.min(0.12, -this.accel * 0.006));
+      m.rider.visible = this.driver !== null && this.fallT <= 0 && !this.destroyed;
+    } else {
+      rollT = Math.max(-0.07, Math.min(0.07, -(this.yawRate || 0) * this.speed * 0.0035));
+      pitchT = Math.max(-0.05, Math.min(0.05, -this.accel * 0.003));
+    }
+    const k = Math.min(1, dt * (s.lean ? 6 : 8));
     this.roll += (rollT - this.roll) * k; this.pitch += (pitchT - this.pitch) * k;
-    m.chassis.rotation.z = this.roll + (this.destroyed ? 0.12 : 0);
+    m.chassis.rotation.z = this.roll + (this.destroyed && !s.lean ? 0.12 : 0);
     m.chassis.rotation.x = this.pitch;
     if (!this.destroyed) {
       const lit = this.driver !== null;
@@ -176,11 +224,16 @@ export class Vehicle {
     }
   }
 
+  // Burnt-out wreck: charcoal shell with black windows, dead lamps, burnt tyres, body sunk a little.
   blacken() {
     const m = this.model;
-    m.body.material = MATS.burnt;
+    char(m);
+    m.body.material = MATS.charred;
     m.head.material = MATS.off; m.tail.material = MATS.off;
+    m.wheelF.material = MATS.burnt; m.wheelR.material = MATS.burnt;
     if (m.red) { m.red.material = MATS.off; m.blue.material = MATS.off; }
+    if (m.rider) m.rider.visible = false;
+    m.chassis.position.y = -0.06;
     m.body.castShadow = true;
   }
 }
